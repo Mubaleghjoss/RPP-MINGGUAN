@@ -1,4 +1,5 @@
 import './bootstrap';
+import { normalizeGridPatches, readCellValue } from './curriculum-grid';
 
 window.spreadsheetGrid = (domain) => ({
     domain,
@@ -43,14 +44,14 @@ window.spreadsheetGrid = (domain) => ({
     prepareCells() {
         this.$nextTick(() => {
             this.$root.querySelectorAll('[data-grid-cell]').forEach((cell) => {
-                if (cell.dataset.original === undefined) cell.dataset.original = this.valueOf(cell);
+                if (cell.dataset.original === undefined) cell.dataset.original = this.readCellValue(cell);
                 if (!cell.getAttribute('aria-label')) cell.setAttribute('aria-label', `${cell.dataset.field}, baris ${cell.dataset.id}`);
             });
         });
     },
 
-    valueOf(cell) {
-        return String(cell.value ?? '').replace(/\r\n/g, '\n');
+    readCellValue(cell) {
+        return readCellValue(cell);
     },
 
     capture(cell) {
@@ -58,7 +59,7 @@ window.spreadsheetGrid = (domain) => ({
         const id = String(cell.dataset.id);
         const field = cell.dataset.field;
         const original = String(cell.dataset.original ?? '');
-        const value = this.valueOf(cell);
+        const value = this.readCellValue(cell);
         const next = { ...this.pending };
         const activeDomain = this.$root.dataset.gridDomain || this.domain;
         const patch = next[id] ? { ...next[id], changes: { ...next[id].changes } } : {
@@ -80,7 +81,7 @@ window.spreadsheetGrid = (domain) => ({
 
     markMirrors(id, field, value, dirty) {
         this.$root.querySelectorAll(`[data-grid-cell][data-id="${CSS.escape(String(id))}"][data-field="${CSS.escape(field)}"]`).forEach((cell) => {
-            if (cell !== this.activeCell && this.valueOf(cell) !== value) cell.value = value;
+            if (cell !== this.activeCell && this.readCellValue(cell) !== value) cell.value = value;
             cell.classList.toggle('grid-cell-dirty', dirty);
             cell.dataset.dirty = dirty ? 'true' : 'false';
             cell.title = dirty ? 'Berubah — belum disimpan' : '';
@@ -105,7 +106,7 @@ window.spreadsheetGrid = (domain) => ({
             return;
         }
         const field = this.activeCell.dataset.field;
-        const value = this.valueOf(this.activeCell);
+        const value = this.readCellValue(this.activeCell);
         ids.forEach((id) => {
             const target = this.$root.querySelector(`[data-grid-cell][data-id="${CSS.escape(id)}"][data-field="${CSS.escape(field)}"]`);
             if (target) {
@@ -138,9 +139,17 @@ window.spreadsheetGrid = (domain) => ({
         }
         this.saving = true;
         this.clientMessage = '';
-        // Alpine wraps component state in reactive proxies. Livewire actions
-        // require a plain serializable payload, especially for nested patches.
-        const patches = JSON.parse(JSON.stringify(Object.values(this.pending)));
+        let patches;
+        try {
+            patches = normalizeGridPatches(this.pending);
+        } catch (error) {
+            console.error('Draf kurikulum tidak dapat dinormalisasi.', error);
+            this.clientMessage = error instanceof TypeError
+                ? error.message
+                : 'Draf tidak dapat dibaca. Batalkan draf lalu muat ulang halaman.';
+            this.saving = false;
+            return;
+        }
         try {
             const result = await this.$wire.$call('savePatches', patches, this.reason.trim());
             if (!result?.ok) {
@@ -151,7 +160,7 @@ window.spreadsheetGrid = (domain) => ({
             this.reason = '';
             this.$nextTick(() => {
                 this.$root.querySelectorAll('[data-grid-cell]').forEach((cell) => {
-                    cell.dataset.original = this.valueOf(cell);
+                    cell.dataset.original = this.readCellValue(cell);
                     cell.classList.remove('grid-cell-dirty');
                     cell.dataset.dirty = 'false';
                     cell.title = '';

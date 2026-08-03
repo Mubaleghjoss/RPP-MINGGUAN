@@ -8,7 +8,6 @@ use App\Models\CalendarWeek;
 use App\Models\GgbItem;
 use App\Models\GgbSyllabusLink;
 use App\Models\Level;
-use App\Models\RevisionBatch;
 use App\Models\RppPlan;
 use App\Models\RppWeekItem;
 use App\Models\SourceDocument;
@@ -26,13 +25,21 @@ class CurriculumRevisionTest extends TestCase
     use RefreshDatabase;
 
     private User $admin;
+
     private Level $level;
+
     private GgbItem $ggb;
+
     private SyllabusItem $syllabus;
+
     private GgbSyllabusLink $link;
+
     private RppPlan $plan;
+
     private CalendarWeek $effective;
+
     private CalendarWeek $holiday;
+
     private RppWeekItem $placement;
 
     protected function setUp(): void
@@ -104,6 +111,32 @@ class CurriculumRevisionTest extends TestCase
 
         $this->assertSame('Materi asli', $this->ggb->fresh()->title);
         $this->assertDatabaseCount('revision_batches', 0);
+    }
+
+    public function test_syllabus_allocation_save_clears_flag_and_removes_row_from_filter(): void
+    {
+        $this->syllabus->update([
+            'allocation_text' => null,
+            'recommended_sessions' => null,
+            'needs_allocation' => true,
+        ]);
+
+        Livewire::actingAs($this->admin);
+        Livewire::withQueryParams(['tab' => 'syllabus', 'filter' => 'allocation'])
+            ->test(CurriculumEditor::class, ['level' => $this->level])
+            ->assertSee($this->syllabus->stable_code)
+            ->call('savePatches', [[
+                'domain' => 'syllabus', 'id' => $this->syllabus->id, 'version' => 0,
+                'changes' => ['allocation_text' => 'Tentatif (Sabtu/Minggu)', 'recommended_sessions' => '1'],
+            ]], 'Lengkapi alokasi materi PAUD')
+            ->assertSet('errorMessage', '')
+            ->assertDontSee($this->syllabus->stable_code);
+
+        $this->syllabus->refresh();
+        $this->assertSame('Tentatif (Sabtu/Minggu)', $this->syllabus->allocation_text);
+        $this->assertSame(1, $this->syllabus->recommended_sessions);
+        $this->assertFalse($this->syllabus->needs_allocation);
+        $this->assertSame(1, $this->syllabus->lock_version);
     }
 
     public function test_restore_creates_a_new_revision_and_rejects_stale_restore(): void
