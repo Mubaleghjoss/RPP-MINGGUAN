@@ -1,7 +1,6 @@
 import './bootstrap';
 
-window.spreadsheetGrid = (wire, domain) => ({
-    wire,
+window.spreadsheetGrid = (domain) => ({
     domain,
     pending: {},
     selected: {},
@@ -139,9 +138,11 @@ window.spreadsheetGrid = (wire, domain) => ({
         }
         this.saving = true;
         this.clientMessage = '';
-        const patches = Object.values(this.pending);
+        // Alpine wraps component state in reactive proxies. Livewire actions
+        // require a plain serializable payload, especially for nested patches.
+        const patches = JSON.parse(JSON.stringify(Object.values(this.pending)));
         try {
-            const result = await this.wire.savePatches(patches, this.reason);
+            const result = await this.$wire.$call('savePatches', patches, this.reason.trim());
             if (!result?.ok) {
                 this.clientMessage = result?.message ?? 'Perubahan gagal disimpan.';
                 return;
@@ -157,6 +158,7 @@ window.spreadsheetGrid = (wire, domain) => ({
                 });
             });
         } catch (error) {
+            console.error('Gagal mengirim revisi kurikulum.', error);
             this.clientMessage = 'Koneksi terputus atau data berubah. Muat ulang lalu coba kembali.';
         } finally {
             this.saving = false;

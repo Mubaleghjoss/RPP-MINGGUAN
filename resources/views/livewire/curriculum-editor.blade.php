@@ -1,4 +1,4 @@
-<div x-data="spreadsheetGrid($wire, @js($tab))" data-grid-domain="{{ $tab }}" x-on:keydown.window="handleShortcut($event)" class="space-y-6">
+<div x-data="spreadsheetGrid(@js($tab))" data-grid-domain="{{ $tab }}" x-on:keydown.window="handleShortcut($event)" class="space-y-6">
     <header class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
         <div>
             <a href="{{ route('curriculum.show', $level) }}" class="text-sm font-semibold text-emerald-700">Kembali ke {{ $level->name }}</a>
