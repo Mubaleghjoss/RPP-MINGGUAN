@@ -4,12 +4,13 @@ Aplikasi Laravel 12 untuk menjaga alur **GGB → Silabus → RPP global mingguan
 
 ## Fitur utama
 
-- Dashboard kelengkapan 17 jenjang dan audit 34 dokumen sumber.
+- Dashboard kelengkapan 17 jenjang, 34 RPP semester, dan audit 34 dokumen sumber.
 - Master GGB, silabus, relasi, kalender akademik, dan RPP mingguan.
 - Editor tabel bergaya Excel: pencarian, filter, 100 baris per halaman, sticky header/ID, navigasi keyboard, paste TSV, Isi ke bawah, dan simpan massal.
 - Riwayat revisi per batch dan per baris, optimistic locking, serta pemulihan yang tetap berjejak.
 - Planner deterministik hanya pada minggu efektif dan mempertahankan materi terkunci.
-- Ekspor fallback menghasilkan `Overview` dan 17 sheet RPP walaupun template Excel lokal tidak tersedia.
+- Preview interaktif per jenjang–semester dengan target progres, edit manual berjejak, dan penyusunan otomatis.
+- Ekspor terpilih menghasilkan dua sheet: `Ringkasan` dan `RPP Semester 1/2` tanpa memerlukan template Excel lokal.
 
 ## Data sumber dan file lokal
 
@@ -19,7 +20,6 @@ Jika ingin membuka PDF dari halaman kurikulum, tempatkan aset lokal mengikuti st
 
 - `1. GGB/` untuk 17 PDF GGB.
 - `2. SILABUS/` untuk 17 PDF silabus.
-- root proyek untuk template `3. RPP 26_27 daerah TangKot.xlsx` (opsional).
 - `output/` untuk workbook hasil ekspor lokal.
 
 Saat PDF tidak tersedia, aplikasi menampilkan **PDF hanya tersedia lokal**, bukan tautan rusak. Semua `*.pdf`, `*.xlsx`, hasil build, dependency, `.env`, dan hasil ekspor diabaikan Git.
@@ -56,7 +56,7 @@ Pilih **Master Kurikulum → Edit Tabel** pada salah satu jenjang. Tab yang ters
 - GGB: aspek, subaspek, materi, target, dan urutan.
 - Silabus: kategori, materi, penjabaran, alokasi, pertemuan, referensi, penilaian, duplikat, dan urutan.
 - Relasi: pasangan GGB–silabus, status, dan catatan.
-- RPP Mingguan: minggu efektif, aspek, isi, posisi, dan kunci.
+- RPP Mingguan: semester, minggu efektif, aspek, isi, rentang progres, posisi, dan kunci.
 
 Kode stabil, source key, dokumen, checksum, dan halaman sumber tidak dapat diedit. Sel berubah menjadi draf lokal sampai Admin memberi alasan dan memilih **Simpan semua**. Konflik versi membatalkan seluruh batch, sehingga perubahan dari tab lain tidak ditimpa diam-diam.
 
@@ -64,11 +64,13 @@ Pintasan grid desktop: tombol panah, Enter/F2, Tab, Escape, `Ctrl+S`/`Cmd+S`, co
 
 ## Ekspor
 
+Buka `/ekspor`, pilih jenjang dan Semester 1/2, periksa preview, lalu pilih **Unduh Excel semester ini**. Workbook hanya memuat 26 minggu semester terpilih. Dari terminal:
+
 ```powershell
-php artisan rpp:export "E:\xampp\htdocs\rpp-ppg\output\RPP_26_27_TangKot_Terverifikasi.xlsx"
+php artisan rpp:export PAUD 1 "E:\xampp\htdocs\rpp-ppg\output\RPP_2026-2027_PAUD_Semester_1.xlsx"
 ```
 
-Jika template XLSX lokal ditemukan, exporter membacanya; jika tidak, exporter membuat workbook baru. File asli tidak pernah ditimpa secara otomatis.
+Target awal Tilawati PAUD adalah halaman 1–22 pada Semester 1 dan 23–44 pada Semester 2. Admin dapat mengubah target halaman, ayat, surat, bab, atau label khusus melalui preview. Rentang halaman selalu ditulis sebagai teks agar Excel tidak mengubahnya menjadi tanggal.
 
 ## Pengujian
 

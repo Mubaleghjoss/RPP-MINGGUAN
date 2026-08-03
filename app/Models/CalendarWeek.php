@@ -7,7 +7,18 @@ use Illuminate\Database\Eloquent\Model;
 class CalendarWeek extends Model
 {
     protected $guarded = [];
+
+    protected $attributes = ['semester' => 1];
+
     protected $casts = ['starts_on' => 'date', 'is_effective' => 'boolean'];
-    public function academicYear() { return $this->belongsTo(AcademicYear::class); }
-    public function placements() { return $this->hasMany(RppWeekItem::class); }
+
+    public function academicYear()
+    {
+        return $this->belongsTo(AcademicYear::class);
+    }
+
+    public function placements()
+    {
+        return $this->hasMany(RppWeekItem::class);
+    }
 }

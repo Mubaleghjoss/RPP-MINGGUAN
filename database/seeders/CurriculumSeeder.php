@@ -27,8 +27,8 @@ class CurriculumSeeder extends Seeder
             throw new RuntimeException('Data ekstraksi belum tersedia. Jalankan: python scripts/extract_curriculum.py');
         }
         $data = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
-        if (($data['meta']['document_count'] ?? 0) !== 34 || ($data['meta']['level_count'] ?? 0) !== 17) {
-            throw new RuntimeException('Audit sumber gagal: diperlukan 17 jenjang dan 34 dokumen.');
+        if (($data['meta']['schema_version'] ?? 0) !== 2 || ($data['meta']['document_count'] ?? 0) !== 34 || ($data['meta']['level_count'] ?? 0) !== 17) {
+            throw new RuntimeException('Audit sumber gagal: diperlukan curriculum.json schema 2 dengan 17 jenjang dan 34 dokumen.');
         }
 
         DB::transaction(function () use ($data) {
@@ -96,6 +96,8 @@ class CurriculumSeeder extends Seeder
                         'reference_text' => $row['reference_text'],
                         'assessment_text' => $row['assessment_text'],
                         'is_duplicate' => (bool) ($row['is_duplicate'] ?? false),
+                        'source_semester' => $row['source_semester'],
+                        'semester_scope' => $row['semester_scope'],
                         'sort_order' => $row['sort_order'],
                     ], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
                     'allocation_text' => $row['allocation_text'],
@@ -107,6 +109,8 @@ class CurriculumSeeder extends Seeder
                     'source_page' => $row['source_page'],
                     'sort_order' => $row['sort_order'],
                     'group_number' => $row['group_number'],
+                    'source_semester' => $row['source_semester'],
+                    'semester_scope' => $row['semester_scope'],
                     'created_at' => $now,
                     'updated_at' => $now,
                 ])->all());
@@ -145,6 +149,7 @@ class CurriculumSeeder extends Seeder
                 CalendarWeek::query()->create([
                     'academic_year_id' => $year->id,
                     'week_number' => $week,
+                    'semester' => $week <= 26 ? 1 : 2,
                     'starts_on' => $date,
                     'month_label' => $date->locale('id')->translatedFormat('F'),
                     'type' => 'effective',
@@ -154,11 +159,14 @@ class CurriculumSeeder extends Seeder
             }
 
             foreach (Level::query()->orderBy('sort_order')->get() as $level) {
-                RppPlan::query()->create([
-                    'academic_year_id' => $year->id,
-                    'level_id' => $level->id,
-                    'status' => 'draft',
-                ]);
+                foreach ([1, 2] as $semester) {
+                    RppPlan::query()->create([
+                        'academic_year_id' => $year->id,
+                        'level_id' => $level->id,
+                        'semester' => $semester,
+                        'status' => 'draft',
+                    ]);
+                }
 
                 $counts = DB::table('ggb_syllabus_links')
                     ->join('syllabus_items', 'syllabus_items.id', '=', 'ggb_syllabus_links.syllabus_item_id')

@@ -8,6 +8,7 @@ use App\Models\Level;
 use App\Models\RevisionBatch;
 use App\Models\RevisionItem;
 use App\Models\RppPlan;
+use App\Models\RppProgressTarget;
 use App\Models\RppWeekItem;
 use App\Models\SyllabusItem;
 use App\Models\User;
@@ -22,9 +23,10 @@ class CurriculumRevisionService
 {
     private const EDITABLE = [
         'ggb' => ['aspect', 'subaspect', 'title', 'target_text', 'sort_order'],
-        'syllabus' => ['category', 'title', 'description', 'allocation_text', 'recommended_sessions', 'reference_text', 'assessment_text', 'is_duplicate', 'sort_order'],
+        'syllabus' => ['category', 'title', 'description', 'allocation_text', 'recommended_sessions', 'reference_text', 'assessment_text', 'is_duplicate', 'semester_scope', 'sort_order'],
         'link' => ['status', 'notes'],
-        'rpp' => ['calendar_week_id', 'strand', 'content', 'position', 'is_locked'],
+        'rpp' => ['calendar_week_id', 'strand', 'content', 'progress_start', 'progress_end', 'progress_kind', 'position', 'is_locked'],
+        'progress_target' => ['unit_label', 'range_start', 'range_end', 'strategy'],
     ];
 
     public function applyBatch(array $patches, string $reason, User $user): RevisionBatch
@@ -42,6 +44,7 @@ class CurriculumRevisionService
                 'reason' => trim($reason),
             ]);
             $levels = [];
+            $progressTargets = [];
 
             foreach ($patches as $index => $patch) {
                 $domain = (string) ($patch['domain'] ?? '');
@@ -64,7 +67,7 @@ class CurriculumRevisionService
                     $sessions = $changes['recommended_sessions'] ?? $model->recommended_sessions;
                     $changes['needs_allocation'] = blank($allocation) || $sessions === null;
                 }
-                if ($domain === 'rpp' && array_intersect(array_keys($changes), ['calendar_week_id', 'strand', 'content', 'position'])) {
+                if ($domain === 'rpp' && array_intersect(array_keys($changes), ['calendar_week_id', 'strand', 'content', 'progress_start', 'progress_end', 'progress_kind', 'position'])) {
                     $changes['source'] = 'manual';
                     $changes['is_locked'] = true;
                 }
@@ -72,6 +75,9 @@ class CurriculumRevisionService
                 $before = collect(array_keys($changes))->mapWithKeys(fn ($field) => [$field => $model->getAttribute($field)])->all();
                 $newVersion = $expectedVersion + 1;
                 $model->forceFill($changes + ['lock_version' => $newVersion, 'last_edited_by' => $user->id])->save();
+                if ($domain === 'rpp' && $model->rpp_progress_target_id) {
+                    $progressTargets[(int) $model->rpp_progress_target_id] = true;
+                }
 
                 RevisionItem::query()->create([
                     'revision_batch_id' => $batch->id,
@@ -87,6 +93,10 @@ class CurriculumRevisionService
 
             if ($batch->items()->count() === 0) {
                 throw ValidationException::withMessages(['grid' => 'Tidak ada nilai yang berubah.']);
+            }
+
+            foreach (array_keys($progressTargets) as $targetId) {
+                $this->validateProgressAnchors($targetId);
             }
 
             $this->markPlansDraft(array_keys($levels));
@@ -131,13 +141,90 @@ class CurriculumRevisionService
                 ]);
             }
             $after = ['ggb_item_id' => $ggb->id, 'syllabus_item_id' => $syllabus->id, 'status' => $status, 'notes' => $notes, 'deleted_at' => null];
+
             return $this->recordStandalone($link, 'link', $before, $after, $beforeVersion, (int) $link->lock_version, $reason, $user, [$level->id]);
+        });
+    }
+
+    public function saveProgressTarget(RppPlan $plan, SyllabusItem $syllabus, array $values, int $expectedVersion, string $reason, User $user): RevisionBatch
+    {
+        Validator::make($values + ['reason' => $reason], [
+            'unit_label' => ['required', 'string', 'max:50'],
+            'range_start' => ['required', 'integer', 'min:1', 'max:1000000'],
+            'range_end' => ['required', 'integer', 'gte:range_start', 'max:1000000'],
+            'reason' => ['required', 'string', 'min:5', 'max:500'],
+        ], ['reason.min' => 'Alasan revisi minimal 5 karakter.'])->validate();
+        if ((int) $syllabus->level_id !== (int) $plan->level_id || ! in_array($syllabus->semester_scope, [(string) $plan->semester, 'both'], true)) {
+            throw ValidationException::withMessages(['target' => 'Materi bukan bagian dari jenjang dan semester yang dipilih.']);
+        }
+
+        return DB::transaction(function () use ($plan, $syllabus, $values, $expectedVersion, $reason, $user) {
+            $target = RppProgressTarget::withTrashed()
+                ->where('rpp_plan_id', $plan->id)
+                ->where('syllabus_item_id', $syllabus->id)
+                ->lockForUpdate()
+                ->first();
+            $beforeVersion = (int) ($target?->lock_version ?? 0);
+            if ($target && $beforeVersion !== $expectedVersion) {
+                throw new RuntimeException('Target telah diubah di tab lain. Muat ulang sebelum menyimpan.');
+            }
+            $before = $target ? [
+                'unit_label' => $target->unit_label,
+                'range_start' => $target->range_start,
+                'range_end' => $target->range_end,
+                'strategy' => $target->strategy,
+                'deleted_at' => $target->deleted_at?->toISOString(),
+            ] : ['deleted_at' => now()->toISOString()];
+
+            if (! $target) {
+                $target = new RppProgressTarget([
+                    'rpp_plan_id' => $plan->id,
+                    'syllabus_item_id' => $syllabus->id,
+                ]);
+            } elseif ($target->trashed()) {
+                $target->restore();
+            }
+            $target->forceFill([
+                'unit_label' => trim($values['unit_label']),
+                'range_start' => (int) $values['range_start'],
+                'range_end' => (int) $values['range_end'],
+                'strategy' => 'even',
+                'source' => 'manual',
+                'lock_version' => $beforeVersion + 1,
+                'last_edited_by' => $user->id,
+            ])->save();
+            $after = [
+                'unit_label' => $target->unit_label,
+                'range_start' => $target->range_start,
+                'range_end' => $target->range_end,
+                'strategy' => $target->strategy,
+                'deleted_at' => null,
+            ];
+
+            return $this->recordStandalone($target, 'progress_target', $before, $after, $beforeVersion, (int) $target->lock_version, $reason, $user, [$plan->level_id]);
+        });
+    }
+
+    public function deleteProgressTarget(RppProgressTarget $target, string $reason, User $user): RevisionBatch
+    {
+        Validator::make(['reason' => $reason], ['reason' => ['required', 'string', 'min:5', 'max:500']])->validate();
+
+        return DB::transaction(function () use ($target, $reason, $user) {
+            $target->load('plan');
+            $beforeVersion = (int) $target->lock_version;
+            $before = ['deleted_at' => null];
+            $target->update(['lock_version' => $beforeVersion + 1, 'last_edited_by' => $user->id]);
+            $target->delete();
+            $after = ['deleted_at' => $target->deleted_at?->toISOString()];
+
+            return $this->recordStandalone($target, 'progress_target', $before, $after, $beforeVersion, $beforeVersion + 1, $reason, $user, [$target->plan->level_id]);
         });
     }
 
     public function deleteLink(GgbSyllabusLink $link, string $reason, User $user): RevisionBatch
     {
         Validator::make(['reason' => $reason], ['reason' => ['required', 'string', 'min:5', 'max:500']])->validate();
+
         return DB::transaction(function () use ($link, $reason, $user) {
             $link->load('syllabusItem');
             $beforeVersion = (int) $link->lock_version;
@@ -145,6 +232,7 @@ class CurriculumRevisionService
             $link->update(['lock_version' => $beforeVersion + 1, 'last_edited_by' => $user->id]);
             $link->delete();
             $after = ['deleted_at' => $link->deleted_at?->toISOString()];
+
             return $this->recordStandalone($link, 'link', $before, $after, $beforeVersion, $beforeVersion + 1, $reason, $user, [$link->syllabusItem->level_id]);
         });
     }
@@ -152,6 +240,7 @@ class CurriculumRevisionService
     public function restoreBatch(RevisionBatch $source, string $reason, User $user): RevisionBatch
     {
         Validator::make(['reason' => $reason], ['reason' => ['required', 'string', 'min:5', 'max:500']])->validate();
+
         return DB::transaction(function () use ($source, $reason, $user) {
             $source->load('items');
             $batch = RevisionBatch::query()->create([
@@ -168,7 +257,7 @@ class CurriculumRevisionService
                 $newVersion = (int) $model->lock_version + 1;
                 $restoreValues = $sourceItem->before_values;
                 $model->forceFill($restoreValues + ['lock_version' => $newVersion, 'last_edited_by' => $user->id])->save();
-                if ($model instanceof GgbSyllabusLink && array_key_exists('deleted_at', $restoreValues)) {
+                if (($model instanceof GgbSyllabusLink || $model instanceof RppProgressTarget) && array_key_exists('deleted_at', $restoreValues)) {
                     $restoreValues['deleted_at'] === null ? $model->restore() : $model->delete();
                 }
                 RevisionItem::query()->create([
@@ -185,6 +274,7 @@ class CurriculumRevisionService
             $this->markPlansDraft(array_keys($levels));
             $batch->update(['item_count' => $batch->items()->count()]);
             $this->activity($user, 'curriculum.batch_restored', ['batch_uuid' => $batch->uuid, 'source_batch_uuid' => $source->uuid]);
+
             return $batch;
         });
     }
@@ -200,15 +290,24 @@ class CurriculumRevisionService
             'description' => ['required', 'string', 'max:10000'], 'allocation_text' => ['nullable', 'string', 'max:5000'],
             'recommended_sessions' => ['nullable', 'integer', 'min:1', 'max:500'], 'reference_text' => ['nullable', 'string', 'max:5000'],
             'assessment_text' => ['nullable', 'string', 'max:5000'], 'is_duplicate' => ['boolean'],
+            'semester_scope' => ['required', 'in:1,2,both'],
             'status' => ['required', 'in:sesuai,sebagian,perlu_verifikasi'], 'notes' => ['nullable', 'string', 'max:5000'],
             'calendar_week_id' => ['required', 'integer', 'min:1'], 'strand' => ['required', 'string', 'max:1000'],
             'content' => ['required', 'string', 'max:10000'], 'position' => ['required', 'integer', 'min:1', 'max:1000'],
             'is_locked' => ['boolean'],
+            'progress_start' => ['nullable', 'integer', 'min:1', 'max:1000000'],
+            'progress_end' => ['nullable', 'integer', 'min:1', 'max:1000000'],
+            'progress_kind' => ['nullable', 'in:materi_baru,penguatan'],
+            'unit_label' => ['required', 'string', 'max:50'],
+            'range_start' => ['required', 'integer', 'min:1', 'max:1000000'],
+            'range_end' => ['required', 'integer', 'min:1', 'max:1000000'],
+            'strategy' => ['required', 'in:even'],
         ];
         $normalized = [];
         foreach ($changes as $field => $value) {
-            if (in_array($field, ['sort_order', 'recommended_sessions', 'calendar_week_id', 'position'], true)) {
-                $value = blank($value) && $field === 'recommended_sessions' ? null : (int) $value;
+            if (in_array($field, ['sort_order', 'recommended_sessions', 'calendar_week_id', 'position', 'progress_start', 'progress_end', 'range_start', 'range_end'], true)) {
+                $nullableNumber = in_array($field, ['recommended_sessions', 'progress_start', 'progress_end'], true);
+                $value = blank($value) && $nullableNumber ? null : (int) $value;
             }
             if (in_array($field, ['is_duplicate', 'is_locked'], true)) {
                 $value = filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? (bool) $value;
@@ -224,11 +323,26 @@ class CurriculumRevisionService
         }
         if ($domain === 'rpp' && isset($normalized['calendar_week_id'])) {
             $item = $model instanceof RppWeekItem ? $model : throw new RuntimeException('Baris RPP tidak valid.');
-            $valid = $item->plan->academicYear->weeks()->whereKey($normalized['calendar_week_id'])->where('is_effective', true)->exists();
+            $valid = $item->plan->academicYear->weeks()->whereKey($normalized['calendar_week_id'])->where('semester', $item->plan->semester)->where('is_effective', true)->exists();
             if (! $valid) {
                 throw ValidationException::withMessages(['grid' => 'Materi hanya dapat dipindahkan ke minggu efektif.']);
             }
         }
+        if ($domain === 'rpp') {
+            $start = $normalized['progress_start'] ?? $model->progress_start;
+            $end = $normalized['progress_end'] ?? $model->progress_end;
+            if (($start === null) !== ($end === null) || ($start !== null && (int) $start > (int) $end)) {
+                throw ValidationException::withMessages(['grid' => 'Rentang progres harus memiliki nilai awal dan akhir yang berurutan.']);
+            }
+        }
+        if ($domain === 'progress_target') {
+            $start = $normalized['range_start'] ?? $model->range_start;
+            $end = $normalized['range_end'] ?? $model->range_end;
+            if ((int) $start > (int) $end) {
+                throw ValidationException::withMessages(['grid' => 'Target akhir harus sama dengan atau lebih besar dari target awal.']);
+            }
+        }
+
         return $normalized;
     }
 
@@ -239,6 +353,7 @@ class CurriculumRevisionService
             'syllabus' => SyllabusItem::query()->findOrFail($id),
             'link' => ($withTrashed ? GgbSyllabusLink::withTrashed() : GgbSyllabusLink::query())->findOrFail($id),
             'rpp' => RppWeekItem::query()->with('plan.academicYear')->findOrFail($id),
+            'progress_target' => ($withTrashed ? RppProgressTarget::withTrashed() : RppProgressTarget::query())->with('plan')->findOrFail($id),
             default => throw ValidationException::withMessages(['grid' => 'Jenis tabel tidak valid.']),
         };
     }
@@ -248,7 +363,7 @@ class CurriculumRevisionService
         $levelId = match ($domain) {
             'ggb', 'syllabus' => $model->level_id,
             'link' => $model->syllabusItem()->value('level_id'),
-            'rpp' => $model->plan()->value('level_id'),
+            'rpp', 'progress_target' => $model->plan()->value('level_id'),
             default => null,
         };
         if ($levelId) {
@@ -260,6 +375,28 @@ class CurriculumRevisionService
     {
         if ($levelIds !== []) {
             RppPlan::query()->whereIn('level_id', $levelIds)->update(['status' => 'draft', 'validated_at' => null]);
+        }
+    }
+
+    private function validateProgressAnchors(int $targetId): void
+    {
+        $target = RppProgressTarget::query()->with('plan')->findOrFail($targetId);
+        $anchors = $target->placements()->with('week')->where('is_locked', true)->get()->sortBy(fn (RppWeekItem $item) => $item->week->week_number);
+        $previousEnd = (int) $target->range_start - 1;
+        foreach ($anchors as $anchor) {
+            if (! $anchor->week->is_effective || (int) $anchor->week->semester !== (int) $target->plan->semester) {
+                throw ValidationException::withMessages(['grid' => "Jangkar manual M{$anchor->week->week_number} harus berada pada minggu efektif Semester {$target->plan->semester}."]);
+            }
+            if ($anchor->progress_start === null || $anchor->progress_end === null
+                || (int) $anchor->progress_start < (int) $target->range_start
+                || (int) $anchor->progress_end > (int) $target->range_end
+                || (int) $anchor->progress_start > (int) $anchor->progress_end) {
+                throw ValidationException::withMessages(['grid' => "Rentang manual M{$anchor->week->week_number} berada di luar target {$target->range_start}–{$target->range_end}."]);
+            }
+            if ((int) $anchor->progress_start <= $previousEnd) {
+                throw ValidationException::withMessages(['grid' => "Rentang manual M{$anchor->week->week_number} tumpang tindih atau mundur."]);
+            }
+            $previousEnd = (int) $anchor->progress_end;
         }
     }
 
@@ -275,7 +412,8 @@ class CurriculumRevisionService
             'before_lock_version' => $beforeVersion, 'after_lock_version' => $afterVersion,
         ]);
         $this->markPlansDraft($levels);
-        $this->activity($user, 'curriculum.relation_changed', ['batch_uuid' => $batch->uuid]);
+        $this->activity($user, 'curriculum.revision_saved', ['batch_uuid' => $batch->uuid, 'domain' => $domain]);
+
         return $batch;
     }
 

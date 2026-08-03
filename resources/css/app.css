@@ -15,8 +15,8 @@
     body { @apply bg-slate-50 text-slate-900 antialiased; }
     [x-cloak] { display: none !important; }
     button, a, select, input, textarea, summary { @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 focus-visible:ring-offset-2; }
-    button, select, a { touch-action: manipulation; }
-    button, select { @apply cursor-pointer; }
+    button, select, a, summary { touch-action: manipulation; }
+    button, select, summary { @apply cursor-pointer; }
 }
 
 @layer components {
@@ -53,6 +53,9 @@
     .mobile-row-editor label { @apply block text-sm font-medium text-slate-700; }
     .mobile-row-editor textarea, .mobile-row-editor input, .mobile-row-editor select { @apply mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm; }
     .mobile-row-editor textarea { @apply min-h-24; }
+    .preview-grid [data-grid-cell] { @apply min-h-11 rounded-lg border border-slate-300 bg-white px-2 py-2 text-sm text-slate-900 outline-none; }
+    .preview-grid textarea[data-grid-cell] { @apply resize-y leading-5; }
+    .preview-grid .grid-cell-dirty { @apply bg-amber-50 font-medium ring-2 ring-inset ring-amber-500; background-image: linear-gradient(135deg, #b45309 0 8px, transparent 8px); }
 }
 
 @media (max-width: 767px) {

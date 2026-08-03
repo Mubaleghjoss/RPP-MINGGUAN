@@ -11,12 +11,15 @@ use Illuminate\Validation\ValidationException;
 
 class RppPlanner
 {
+    public function __construct(private readonly RppProgressService $progress) {}
+
     public function scheduleOne(RppPlan $plan, int $syllabusItemId, ?int $userId): RppWeekItem
     {
         return DB::transaction(function () use ($plan, $syllabusItemId, $userId) {
             $lockedPlan = RppPlan::query()->lockForUpdate()->findOrFail($plan->id);
             $weeks = CalendarWeek::query()
                 ->where('academic_year_id', $lockedPlan->academic_year_id)
+                ->where('semester', $lockedPlan->semester)
                 ->where('is_effective', true)
                 ->orderBy('week_number')
                 ->lockForUpdate()
@@ -36,6 +39,12 @@ class RppPlanner
             if ($item->needs_allocation || blank($item->allocation_text) || (int) $item->recommended_sessions < 1) {
                 throw ValidationException::withMessages(['material' => 'Lengkapi alokasi dan jumlah pertemuan minimal 1 sebelum menjadwalkan materi.']);
             }
+            if (! in_array($item->semester_scope, [(string) $lockedPlan->semester, 'both'], true)) {
+                throw ValidationException::withMessages(['material' => "Materi bukan bagian dari Semester {$lockedPlan->semester}."]);
+            }
+            if ($lockedPlan->progressTargets()->where('syllabus_item_id', $item->id)->exists()) {
+                throw ValidationException::withMessages(['material' => 'Materi ini menggunakan target progres. Gunakan Susun Otomatis agar rentangnya tetap berurutan.']);
+            }
             if (RppWeekItem::query()->where('rpp_plan_id', $lockedPlan->id)->where('syllabus_item_id', $item->id)->lockForUpdate()->exists()) {
                 throw ValidationException::withMessages(['material' => 'Materi ini sudah dijadwalkan. Muat ulang halaman untuk melihat jadwal terbaru.']);
             }
@@ -45,6 +54,7 @@ class RppPlanner
                 ->where('level_id', $lockedPlan->level_id)
                 ->where('is_duplicate', false)
                 ->where('needs_allocation', false)
+                ->whereIn('semester_scope', [(string) $lockedPlan->semester, 'both'])
                 ->orderBy('sort_order')
                 ->orderBy('id')
                 ->lockForUpdate()
@@ -105,19 +115,37 @@ class RppPlanner
         return DB::transaction(function () use ($plan) {
             // Selalu muat ulang agar perubahan manual/kunci dari request lain
             // menjadi sumber kebenaran saat penyusunan ulang.
-            $plan->load(['level.syllabusItems', 'academicYear.weeks', 'items']);
-            $weeks = $plan->academicYear->weeks->where('is_effective', true)->sortBy('week_number')->values();
+            $plan->load(['level.syllabusItems', 'academicYear.weeks', 'items', 'progressTargets.syllabusItem']);
+            $this->progress->ensureDefaults($plan);
+            $plan->load('progressTargets.syllabusItem');
+            $weeks = $plan->academicYear->weeks
+                ->where('semester', (int) $plan->semester)
+                ->where('is_effective', true)
+                ->sortBy('week_number')
+                ->values();
             if ($weeks->isEmpty()) {
+                if ($plan->progressTargets->isNotEmpty()) {
+                    throw ValidationException::withMessages(['progress' => "Semester {$plan->semester} tidak memiliki minggu efektif untuk target progres."]);
+                }
+
                 return $plan;
             }
 
             $lockedSyllabusIds = $plan->items->where('is_locked', true)->pluck('syllabus_item_id')->all();
             $plan->items()->where('source', 'auto')->where('is_locked', false)->delete();
 
+            foreach ($plan->progressTargets as $target) {
+                $this->progress->generateTarget($plan, $target, $weeks);
+            }
+
+            $progressSyllabusIds = $plan->progressTargets->pluck('syllabus_item_id')->all();
+
             $groups = $plan->level->syllabusItems
                 ->whereNotIn('id', $lockedSyllabusIds)
+                ->whereNotIn('id', $progressSyllabusIds)
                 ->where('is_duplicate', false)
                 ->where('needs_allocation', false)
+                ->whereIn('semester_scope', [(string) $plan->semester, 'both'])
                 ->filter(fn (SyllabusItem $item) => filled($item->allocation_text) && (int) $item->recommended_sessions >= 1)
                 ->sortBy('sort_order')
                 ->groupBy(fn ($item) => trim($item->category) ?: 'Materi');
@@ -144,10 +172,8 @@ class RppPlanner
                 }
             }
 
-            $total = $plan->level->syllabusItems()->where('is_duplicate', false)->count();
-            $planned = $plan->items()->distinct('syllabus_item_id')->count('syllabus_item_id');
-            $coverage = $total > 0 ? round(($planned / $total) * 100, 2) : 0;
-            $plan->update(['coverage_percent' => $coverage, 'status' => 'draft', 'validated_at' => null]);
+            $this->refreshCoverage($plan);
+            $plan->update(['status' => 'draft', 'validated_at' => null]);
 
             return $plan->fresh(['items', 'level', 'academicYear.weeks']);
         });
@@ -155,13 +181,17 @@ class RppPlanner
 
     public function generateAll(): void
     {
-        RppPlan::query()->with(['level.syllabusItems', 'academicYear.weeks', 'items'])->each(fn (RppPlan $plan) => $this->generate($plan));
+        RppPlan::query()->with(['level.syllabusItems', 'academicYear.weeks', 'items', 'progressTargets'])->each(fn (RppPlan $plan) => $this->generate($plan));
     }
 
     public function validate(RppPlan $plan): bool
     {
         $this->refreshCoverage($plan);
         if ((float) $plan->coverage_percent < 100) {
+            return false;
+        }
+        $plan->load('progressTargets');
+        if ($plan->progressTargets->contains(fn ($target) => ! $this->progress->isComplete($target))) {
             return false;
         }
         $plan->update(['status' => 'validated', 'validated_at' => now()]);
@@ -171,7 +201,10 @@ class RppPlanner
 
     public function refreshCoverage(RppPlan $plan): void
     {
-        $total = $plan->level->syllabusItems()->where('is_duplicate', false)->count();
+        $total = $plan->level->syllabusItems()
+            ->where('is_duplicate', false)
+            ->whereIn('semester_scope', [(string) $plan->semester, 'both'])
+            ->count();
         $planned = $plan->items()->distinct('syllabus_item_id')->count('syllabus_item_id');
         $plan->update(['coverage_percent' => $total ? round(($planned / $total) * 100, 2) : 0]);
         $plan->refresh();

@@ -3,21 +3,17 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
-class RppWeekItem extends Model
+class RppProgressTarget extends Model
 {
-    protected $guarded = [];
+    use SoftDeletes;
 
-    protected $casts = ['is_locked' => 'boolean'];
+    protected $guarded = [];
 
     public function plan()
     {
         return $this->belongsTo(RppPlan::class, 'rpp_plan_id');
-    }
-
-    public function week()
-    {
-        return $this->belongsTo(CalendarWeek::class, 'calendar_week_id');
     }
 
     public function syllabusItem()
@@ -25,9 +21,9 @@ class RppWeekItem extends Model
         return $this->belongsTo(SyllabusItem::class);
     }
 
-    public function progressTarget()
+    public function placements()
     {
-        return $this->belongsTo(RppProgressTarget::class, 'rpp_progress_target_id');
+        return $this->hasMany(RppWeekItem::class);
     }
 
     public function editor()

@@ -2,8 +2,8 @@
     <header class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
         <div>
             <a href="{{ route('dashboard') }}" class="text-sm font-semibold text-emerald-700">Dashboard</a>
-            <h1 class="mt-2 text-3xl font-semibold text-balance text-slate-950">RPP mingguan {{ $level->name }}</h1>
-            <p class="mt-2 max-w-3xl text-pretty text-slate-600">Draf otomatis mengikuti urutan silabus dan hanya menggunakan minggu efektif. Materi manual yang dikunci tidak berubah saat disusun ulang.</p>
+            <h1 class="mt-2 text-3xl font-semibold text-balance text-slate-950">RPP mingguan {{ $level->name }} · Semester {{ $semester }}</h1>
+            <p class="mt-2 max-w-3xl text-pretty text-slate-600">Draf otomatis mengikuti semester dan urutan silabus serta hanya menggunakan minggu efektif. Materi manual yang dikunci tidak berubah saat disusun ulang.</p>
         </div>
         <div class="flex flex-wrap gap-2">
             <button wire:click="generateAll" wire:loading.attr="disabled" class="button-secondary">Susun Semua Kelas</button>
@@ -12,17 +12,23 @@
         </div>
     </header>
 
+    <nav class="mt-5 inline-flex rounded-xl bg-slate-100 p-1 ring-1 ring-slate-200" aria-label="Pilih semester">
+        @foreach([1, 2] as $semesterOption)
+            <button type="button" wire:click="selectSemester({{ $semesterOption }})" class="min-h-11 rounded-lg px-4 text-sm font-semibold transition-[background-color,color,box-shadow] duration-150 {{ $semester === $semesterOption ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-600 hover:text-slate-950' }}" @if($semester === $semesterOption) aria-current="page" @endif>Semester {{ $semesterOption }}</button>
+        @endforeach
+    </nav>
+
     @if($notice)<div class="mt-5 rounded-xl bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-900 ring-1 ring-emerald-200" role="status" aria-live="polite">{{ $notice }}</div>@endif
     @if($errorMessage)<div class="mt-5 rounded-xl bg-red-50 px-4 py-3 text-sm font-medium text-red-900 ring-1 ring-red-200" role="alert">{{ $errorMessage }}</div>@endif
 
     <section class="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-label="Ringkasan RPP">
         <article class="panel p-5"><p class="text-sm text-slate-500">Cakupan</p><p class="metric-number mt-2">{{ number_format((float)$plan->coverage_percent, 1) }}%</p></article>
-        <a href="{{ route('planner.show', ['level' => $level, 'detail' => 'unplanned']) }}#planner-detail" class="panel group p-5 transition-[box-shadow,background-color] duration-150 ease-out hover:bg-red-50/40 hover:shadow-md {{ $detail === 'unplanned' ? 'ring-2 ring-red-600' : '' }}" @if($detail === 'unplanned') aria-current="true" @endif>
+        <a href="{{ route('planner.show', ['level' => $level, ...($semester === 2 ? ['semester' => 2] : []), 'detail' => 'unplanned']) }}#planner-detail" class="panel group p-5 transition-[box-shadow,background-color] duration-150 ease-out hover:bg-red-50/40 hover:shadow-md {{ $detail === 'unplanned' ? 'ring-2 ring-red-600' : '' }}" @if($detail === 'unplanned') aria-current="true" @endif>
             <p class="text-sm font-medium text-slate-600">Belum dijadwalkan</p>
             <p class="metric-number mt-2 {{ $unplanned ? 'text-red-700' : 'text-emerald-800' }}">{{ $unplanned }}</p>
             <p class="mt-2 text-sm font-semibold text-red-700 group-hover:underline">Lihat daftar materi</p>
         </a>
-        <a href="{{ route('planner.show', ['level' => $level, 'detail' => 'allocation']) }}#planner-detail" class="panel group p-5 transition-[box-shadow,background-color] duration-150 ease-out hover:bg-amber-50/50 hover:shadow-md {{ $detail === 'allocation' ? 'ring-2 ring-amber-600' : '' }}" @if($detail === 'allocation') aria-current="true" @endif>
+        <a href="{{ route('planner.show', ['level' => $level, ...($semester === 2 ? ['semester' => 2] : []), 'detail' => 'allocation']) }}#planner-detail" class="panel group p-5 transition-[box-shadow,background-color] duration-150 ease-out hover:bg-amber-50/50 hover:shadow-md {{ $detail === 'allocation' ? 'ring-2 ring-amber-600' : '' }}" @if($detail === 'allocation') aria-current="true" @endif>
             <p class="text-sm font-medium text-slate-600">Perlu alokasi</p>
             <p class="metric-number mt-2 text-amber-700">{{ $needsAllocation }}</p>
             <p class="mt-2 text-sm font-semibold text-amber-800 group-hover:underline">Lihat dan perbaiki</p>

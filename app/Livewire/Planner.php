@@ -36,6 +36,9 @@ class Planner extends Component
     #[Url]
     public string $detail = '';
 
+    #[Url]
+    public int $semester = 1;
+
     public array $selectedPlacements = [];
 
     public array $selectedSyllabus = [];
@@ -53,9 +56,10 @@ class Planner extends Component
     public function mount(Level $level): void
     {
         $this->level = $level;
+        abort_unless(in_array($this->semester, [1, 2], true), 404);
         $year = AcademicYear::query()->where('is_active', true)->firstOrFail();
         $this->plan = RppPlan::query()->firstOrCreate(
-            ['academic_year_id' => $year->id, 'level_id' => $level->id],
+            ['academic_year_id' => $year->id, 'level_id' => $level->id, 'semester' => $this->semester],
             ['status' => 'draft']
         );
         if (! in_array($this->detail, ['', 'unplanned', 'allocation'], true)) {
@@ -63,37 +67,70 @@ class Planner extends Component
         }
     }
 
+    public function selectSemester(int $semester): void
+    {
+        abort_unless(in_array($semester, [1, 2], true), 422);
+        $this->semester = $semester;
+        $this->plan = RppPlan::query()->firstOrCreate(
+            ['academic_year_id' => $this->plan->academic_year_id, 'level_id' => $this->level->id, 'semester' => $semester],
+            ['status' => 'draft']
+        );
+        $this->detail = '';
+        $this->selectedPlacements = [];
+        $this->selectedSyllabus = [];
+        $this->resetManualScheduling();
+        $this->resetPage('detailPage');
+    }
+
     public function generate(RppPlanner $planner): void
     {
-        $this->plan = $planner->generate($this->plan);
-        $this->log('rpp.generated', ['plan_id' => $this->plan->id, 'level' => $this->level->code]);
-        $this->notice = 'Draf otomatis diperbarui. Materi terkunci tetap dipertahankan.';
+        $this->errorMessage = '';
+        try {
+            $this->plan = $planner->generate($this->plan);
+            $this->log('rpp.generated', ['plan_id' => $this->plan->id, 'level' => $this->level->code, 'semester' => $this->semester]);
+            $this->notice = 'Draf otomatis diperbarui. Materi terkunci tetap dipertahankan.';
+        } catch (ValidationException $exception) {
+            $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Penyusunan otomatis gagal.';
+            $this->notice = '';
+        }
     }
 
     public function generateAll(RppPlanner $planner): void
     {
-        $planner->generateAll();
-        $this->plan->refresh();
-        $this->log('rpp.generated_all', ['academic_year_id' => $this->plan->academic_year_id]);
-        $this->notice = 'Semua 17 jenjang disusun ulang. Koreksi yang dikunci tetap dipertahankan.';
+        $this->errorMessage = '';
+        try {
+            $planner->generateAll();
+            $this->plan->refresh();
+            $this->log('rpp.generated_all', ['academic_year_id' => $this->plan->academic_year_id]);
+            $this->notice = 'Semua 34 RPP semester disusun ulang. Koreksi yang dikunci tetap dipertahankan.';
+        } catch (ValidationException $exception) {
+            $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Penyusunan seluruh semester gagal.';
+            $this->notice = '';
+        }
     }
 
     public function fillEmpty(RppPlanner $planner): void
     {
         $this->generate($planner);
-        $this->notice = 'Minggu efektif yang kosong telah diisi sejauh alokasi sumber tersedia.';
+        if ($this->errorMessage === '') {
+            $this->notice = 'Minggu efektif yang kosong telah diisi sejauh alokasi sumber tersedia.';
+        }
     }
 
     public function rebalance(RppPlanner $planner): void
     {
         $this->generate($planner);
-        $this->notice = 'Beban otomatis diratakan kembali tanpa mengubah materi terkunci.';
+        if ($this->errorMessage === '') {
+            $this->notice = 'Beban otomatis diratakan kembali tanpa mengubah materi terkunci.';
+        }
     }
 
     public function restartFromSyllabus(RppPlanner $planner): void
     {
         $this->generate($planner);
-        $this->notice = 'Bagian otomatis diulang dari urutan silabus; koreksi terkunci tetap aman.';
+        if ($this->errorMessage === '') {
+            $this->notice = 'Bagian otomatis diulang dari urutan silabus; koreksi terkunci tetap aman.';
+        }
     }
 
     public function validatePlan(RppPlanner $planner): void
@@ -171,7 +208,7 @@ class Planner extends Component
             if ((int) $this->manualSyllabusId !== $syllabusItemId) {
                 throw ValidationException::withMessages(['material' => 'Form penjadwalan tidak lagi sesuai dengan materi. Buka kembali pilihan minggu.']);
             }
-            $week = $this->plan->academicYear->weeks()->where('is_effective', true)->find($this->manualWeekId);
+            $week = $this->plan->academicYear->weeks()->where('semester', $this->plan->semester)->where('is_effective', true)->find($this->manualWeekId);
             $bulk->scheduleUnplanned(
                 $this->plan,
                 [$syllabusItemId],
@@ -229,11 +266,11 @@ class Planner extends Component
 
     public function render()
     {
-        $this->plan->load(['academicYear.weeks' => fn ($query) => $query->orderBy('week_number'), 'items.syllabusItem']);
+        $this->plan->load(['academicYear.weeks' => fn ($query) => $query->where('semester', $this->plan->semester)->orderBy('week_number'), 'items.syllabusItem']);
         $weeks = $this->plan->academicYear->weeks;
         $itemsByWeek = $this->plan->items->sortBy(['strand', 'position'])->groupBy('calendar_week_id');
         $unplanned = $this->unplannedQuery()->count();
-        $needsAllocation = $this->level->syllabusItems()->where('is_duplicate', false)->where('needs_allocation', true)->count();
+        $needsAllocation = $this->level->syllabusItems()->where('is_duplicate', false)->whereIn('semester_scope', [(string) $this->plan->semester, 'both'])->where('needs_allocation', true)->count();
         $detailItems = $this->detailItems();
 
         return view('livewire.planner', compact('weeks', 'itemsByWeek', 'unplanned', 'needsAllocation', 'detailItems'));
@@ -254,6 +291,7 @@ class Planner extends Component
     {
         return $this->level->syllabusItems()
             ->where('is_duplicate', false)
+            ->whereIn('semester_scope', [(string) $this->plan->semester, 'both'])
             ->whereDoesntHave('placements', fn ($query) => $query->where('rpp_plan_id', $this->plan->id));
     }
 
@@ -261,7 +299,7 @@ class Planner extends Component
     {
         return match ($this->detail) {
             'unplanned' => $this->unplannedQuery()->orderBy('sort_order')->paginate(25, ['*'], 'detailPage'),
-            'allocation' => $this->level->syllabusItems()->where('is_duplicate', false)->where('needs_allocation', true)->orderBy('sort_order')->paginate(25, ['*'], 'detailPage'),
+            'allocation' => $this->level->syllabusItems()->where('is_duplicate', false)->whereIn('semester_scope', [(string) $this->plan->semester, 'both'])->where('needs_allocation', true)->orderBy('sort_order')->paginate(25, ['*'], 'detailPage'),
             default => null,
         };
     }

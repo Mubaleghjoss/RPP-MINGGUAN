@@ -3,25 +3,26 @@
 namespace App\Http\Controllers;
 
 use App\Models\Level;
-use App\Models\RppPlan;
 use App\Services\CurriculumWorkbookExporter;
-use Illuminate\View\View;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 class ExportController extends Controller
 {
-    public function index(): View
+    public function workbook(Request $request, CurriculumWorkbookExporter $exporter): BinaryFileResponse|RedirectResponse
     {
-        return view('exports.index', [
-            'levelCount' => Level::query()->count(),
-            'validatedCount' => RppPlan::query()->where('status', 'validated')->count(),
-            'averageCoverage' => round((float) RppPlan::query()->avg('coverage_percent'), 1),
-        ]);
-    }
+        $levelId = $request->integer('level');
+        $semester = $request->integer('semester');
+        if (! $levelId || ! in_array($semester, [1, 2], true)) {
+            return redirect()->route('exports.index')->with('notice', 'Pilih jenjang dan semester sebelum membuat workbook.');
+        }
 
-    public function workbook(CurriculumWorkbookExporter $exporter): BinaryFileResponse
-    {
-        $path = $exporter->export();
-        return response()->download($path, 'RPP_26_27_TangKot_Terverifikasi.xlsx');
+        $level = Level::query()->findOrFail($levelId);
+        $path = $exporter->exportLevelSemester($level, $semester);
+        $year = str_replace('/', '-', $exporter->activeYearLabel());
+        $code = str_replace([' ', '/'], '_', $level->code);
+
+        return response()->download($path, "RPP_{$year}_{$code}_Semester_{$semester}.xlsx")->deleteFileAfterSend();
     }
 }

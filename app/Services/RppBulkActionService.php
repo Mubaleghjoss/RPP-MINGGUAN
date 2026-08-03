@@ -67,6 +67,7 @@ class RppBulkActionService
                 ->whereIn('id', $ids)
                 ->where('is_duplicate', false)
                 ->where('needs_allocation', false)
+                ->whereIn('semester_scope', [(string) $lockedPlan->semester, 'both'])
                 ->whereDoesntHave('placements', fn ($query) => $query->where('rpp_plan_id', $lockedPlan->id))
                 ->lockForUpdate()
                 ->get();
@@ -131,6 +132,7 @@ class RppBulkActionService
 
         $week = CalendarWeek::query()
             ->where('academic_year_id', $plan->academic_year_id)
+            ->where('semester', $plan->semester)
             ->where('is_effective', true)
             ->lockForUpdate()
             ->find($weekId);

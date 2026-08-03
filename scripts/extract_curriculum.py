@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import unicodedata
 from collections import defaultdict
@@ -209,6 +210,7 @@ def extract_syllabus(path: Path, document_id: str) -> list[dict]:
     current = {"category": "Materi", "allocation": "", "reference": "", "assessment": ""}
 
     with pdfplumber.open(path) as pdf:
+        page_count = len(pdf.pages)
         for page_number, page in enumerate(pdf.pages, start=1):
             for table in page.extract_tables() or []:
                 for row in table:
@@ -247,6 +249,7 @@ def extract_syllabus(path: Path, document_id: str) -> list[dict]:
                             continue
                         order += 1
                         sessions = extract_sessions(current["allocation"])
+                        source_semester = "both" if level == "PAUD" else ("1" if page_number <= math.ceil(page_count / 2) else "2")
                         items.append(
                             {
                                 "source_key": f"{document_id}:p{page_number}:r{order}",
@@ -265,6 +268,8 @@ def extract_syllabus(path: Path, document_id: str) -> list[dict]:
                                 "source_page": page_number,
                                 "sort_order": order,
                                 "group_number": group_number,
+                                "source_semester": source_semester,
+                                "semester_scope": source_semester,
                             }
                         )
     return items
@@ -342,6 +347,7 @@ def main() -> None:
     for item in syllabus_items:
         duplicate_key = (
             item["level_code"],
+            item["source_semester"],
             clean(item["category"]).casefold(),
             clean(item["title"]).casefold(),
             clean(item["allocation_text"]).casefold(),
@@ -352,7 +358,7 @@ def main() -> None:
     links = build_links(ggb_items, syllabus_items)
     data = {
         "meta": {
-            "schema_version": 1,
+            "schema_version": 2,
             "source_policy": "GGB sebagai induk; silabus dan RPP adalah turunan.",
             "level_count": len(LEVELS),
             "document_count": len(documents),

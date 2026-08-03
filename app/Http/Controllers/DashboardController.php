@@ -16,7 +16,7 @@ class DashboardController extends Controller
     {
         $levels = Level::query()
             ->withCount(['ggbItems', 'syllabusItems'])
-            ->with(['plans' => fn ($query) => $query->whereHas('academicYear', fn ($year) => $year->where('is_active', true))])
+            ->with(['plans' => fn ($query) => $query->whereHas('academicYear', fn ($year) => $year->where('is_active', true))->orderBy('semester')])
             ->orderBy('sort_order')
             ->get();
 

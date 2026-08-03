@@ -36,21 +36,32 @@ class CurriculumEditor extends Component
     #[Url]
     public string $filter = '';
 
+    #[Url]
+    public int $semester = 1;
+
     public string $sortField = 'sort_order';
+
     public string $sortDirection = 'asc';
+
     public string $notice = '';
+
     public string $errorMessage = '';
 
     public string $newGgbCode = '';
+
     public string $newSyllabusCode = '';
+
     public string $newRelationStatus = 'perlu_verifikasi';
+
     public string $newRelationNotes = '';
+
     public string $relationReason = '';
 
     public function mount(Level $level): void
     {
         $this->level = $level;
         abort_unless(in_array($this->tab, ['ggb', 'syllabus', 'link', 'rpp'], true), 404);
+        abort_unless(in_array($this->semester, [1, 2], true), 404);
     }
 
     public function setTab(string $tab): void
@@ -64,8 +75,15 @@ class CurriculumEditor extends Component
         $this->resetPage();
     }
 
-    public function updatedSearch(): void { $this->resetPage(); }
-    public function updatedFilter(): void { $this->resetPage(); }
+    public function updatedSearch(): void
+    {
+        $this->resetPage();
+    }
+
+    public function updatedFilter(): void
+    {
+        $this->resetPage();
+    }
 
     public function sortBy(string $field): void
     {
@@ -92,6 +110,7 @@ class CurriculumEditor extends Component
             $batch = $revisions->applyBatch($patches, $reason, Auth::user());
             $this->notice = "{$batch->item_count} baris disimpan dalam revisi {$batch->uuid}.";
             $this->dispatch('grid-saved');
+
             return ['ok' => true, 'batch' => $batch->uuid];
         } catch (ValidationException $exception) {
             $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Data tidak valid.';
@@ -101,6 +120,7 @@ class CurriculumEditor extends Component
             report($exception);
             $this->errorMessage = 'Perubahan gagal disimpan. Tidak ada data yang diterapkan.';
         }
+
         return ['ok' => false, 'message' => $this->errorMessage];
     }
 
@@ -141,12 +161,13 @@ class CurriculumEditor extends Component
     {
         $plan = $this->level->plans()
             ->whereHas('academicYear', fn ($query) => $query->where('is_active', true))
+            ->where('semester', $this->semester)
             ->with('academicYear.weeks')
             ->first();
 
         return view('livewire.curriculum-editor', [
             'rows' => $this->rows(),
-            'effectiveWeeks' => $plan?->academicYear?->weeks->where('is_effective', true)->sortBy('week_number')->values() ?? collect(),
+            'effectiveWeeks' => $plan?->academicYear?->weeks->where('semester', $this->semester)->where('is_effective', true)->sortBy('week_number')->values() ?? collect(),
         ]);
     }
 
@@ -164,6 +185,7 @@ class CurriculumEditor extends Component
                 ->when($this->search !== '', fn ($query) => $query->where(fn ($q) => $q->where('stable_code', 'like', $term)->orWhere('category', 'like', $term)->orWhere('title', 'like', $term)->orWhere('description', 'like', $term)))
                 ->when($this->filter === 'allocation', fn ($query) => $query->where('needs_allocation', true)->where('is_duplicate', false))
                 ->when($this->filter === 'duplicate', fn ($query) => $query->where('is_duplicate', true))
+                ->when(in_array($this->filter, ['1', '2', 'both'], true), fn ($query) => $query->where('semester_scope', $this->filter))
                 ->orderBy(in_array($this->sortField, $this->sortableFields(), true) ? $this->sortField : 'sort_order', $direction)->paginate(100),
             'link' => GgbSyllabusLink::query()->with(['ggbItem:id,stable_code,title', 'syllabusItem:id,level_id,stable_code,title'])
                 ->whereHas('syllabusItem', fn ($query) => $query->where('level_id', $this->level->id))
@@ -171,7 +193,7 @@ class CurriculumEditor extends Component
                 ->when($this->filter !== '', fn ($query) => $query->where('status', $this->filter))
                 ->orderBy(in_array($this->sortField, $this->sortableFields(), true) ? $this->sortField : 'id', $direction)->paginate(100),
             'rpp' => RppWeekItem::query()->with(['week', 'syllabusItem:id,stable_code'])
-                ->whereHas('plan', fn ($query) => $query->where('level_id', $this->level->id)->whereHas('academicYear', fn ($year) => $year->where('is_active', true)))
+                ->whereHas('plan', fn ($query) => $query->where('level_id', $this->level->id)->where('semester', $this->semester)->whereHas('academicYear', fn ($year) => $year->where('is_active', true)))
                 ->when($this->search !== '', fn ($query) => $query->where(fn ($q) => $q->where('strand', 'like', $term)->orWhere('content', 'like', $term)))
                 ->when($this->filter === 'locked', fn ($query) => $query->where('is_locked', true))
                 ->when($this->filter === 'auto', fn ($query) => $query->where('source', 'auto'))
@@ -184,7 +206,7 @@ class CurriculumEditor extends Component
     {
         return match ($this->tab) {
             'ggb' => ['sort_order', 'stable_code', 'aspect', 'subaspect', 'title'],
-            'syllabus' => ['sort_order', 'stable_code', 'category', 'title', 'recommended_sessions'],
+            'syllabus' => ['sort_order', 'stable_code', 'category', 'title', 'recommended_sessions', 'semester_scope'],
             'link' => ['id', 'status', 'confidence'],
             'rpp' => ['calendar_week_id', 'strand', 'position', 'source'],
             default => [],
@@ -197,7 +219,7 @@ class CurriculumEditor extends Component
             'ggb' => GgbItem::query()->whereKey($id)->where('level_id', $this->level->id)->exists(),
             'syllabus' => SyllabusItem::query()->whereKey($id)->where('level_id', $this->level->id)->exists(),
             'link' => GgbSyllabusLink::query()->whereKey($id)->whereHas('syllabusItem', fn ($query) => $query->where('level_id', $this->level->id))->exists(),
-            'rpp' => RppWeekItem::query()->whereKey($id)->whereHas('plan', fn ($query) => $query->where('level_id', $this->level->id))->exists(),
+            'rpp' => RppWeekItem::query()->whereKey($id)->whereHas('plan', fn ($query) => $query->where('level_id', $this->level->id)->where('semester', $this->semester))->exists(),
             default => false,
         };
         abort_unless($valid, 404);
