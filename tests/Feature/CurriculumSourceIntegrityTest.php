@@ -37,5 +37,11 @@ class CurriculumSourceIntegrityTest extends TestCase
             $this->assertSame(isset($seen[$duplicateKey]), (bool) $item['is_duplicate'], "Status duplikat harus dihitung di dalam semester: {$item['stable_code']}");
             $seen[$duplicateKey] = true;
         }
+
+        $preset = json_decode(file_get_contents(database_path('data/rpp_matrix_presets.json')), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame(1, $preset['schema_version']);
+        $coveredCategories = collect($preset['columns'])->flatMap(fn ($column) => $column['categories'])->unique();
+        $sourceCategories = collect($data['syllabus_items'])->pluck('category')->unique();
+        $this->assertSame([], $sourceCategories->diff($coveredCategories)->values()->all(), 'Semua kategori Silabus harus memiliki preset kolom matriks.');
     }
 }

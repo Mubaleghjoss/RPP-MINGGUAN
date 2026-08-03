@@ -10,11 +10,12 @@ Aplikasi Laravel 12 untuk menjaga alur **GGB → Silabus → RPP global mingguan
 - Riwayat revisi per batch dan per baris, optimistic locking, serta pemulihan yang tetap berjejak.
 - Planner deterministik hanya pada minggu efektif dan mempertahankan materi terkunci.
 - Preview interaktif per jenjang–semester dengan target progres, edit manual berjejak, dan penyusunan otomatis.
+- Matriks RPP seperti lembar kerja sekolah: baris mingguan, header GGB bertingkat, fokus karakter bulanan, dan preset kolom yang dapat diatur Admin.
 - Ekspor terpilih menghasilkan dua sheet: `Ringkasan` dan `RPP Semester 1/2` tanpa memerlukan template Excel lokal.
 
 ## Data sumber dan file lokal
 
-Repositori sengaja **tidak menyimpan PDF atau XLSX**. Data seed terstruktur yang dibutuhkan aplikasi tersedia pada `database/data/curriculum.json`, sehingga clone baru tidak membutuhkan PDF/Excel untuk migrasi dan seed.
+Repositori sengaja **tidak menyimpan PDF atau XLSX**. Data seed terstruktur tersedia pada `database/data/curriculum.json`, sedangkan aturan preset matriks berada di `database/data/rpp_matrix_presets.json`. Clone baru tidak membutuhkan PDF/Excel untuk migrasi dan seed.
 
 Jika ingin membuka PDF dari halaman kurikulum, tempatkan aset lokal mengikuti struktur path yang tercatat di JSON:
 
@@ -64,13 +65,22 @@ Pintasan grid desktop: tombol panah, Enter/F2, Tab, Escape, `Ctrl+S`/`Cmd+S`, co
 
 ## Ekspor
 
-Buka `/ekspor`, pilih jenjang dan Semester 1/2, periksa preview, lalu pilih **Unduh Excel semester ini**. Workbook hanya memuat 26 minggu semester terpilih. Dari terminal:
+Buka `/ekspor`, pilih jenjang dan Semester 1/2, lalu gunakan:
+
+- **Susun Otomatis** untuk membagi materi per kolom ke minggu efektif.
+- **Atur Kolom** untuk mengubah aspek, subaspek, label, urutan, lebar, serta pemetaan Silabus.
+- **Atur Target** untuk membagi progres halaman/ayat secara berurutan.
+- Klik sebuah materi untuk mengedit minggu, kolom, isi, progres, dan kunci melalui drawer.
+
+Preview desktop memakai matriks bertingkat; ponsel memakai kartu per minggu. Workbook memuat 26 minggu semester terpilih dalam dua blok triwulan, dengan komentar sel yang menyimpan sumber GGB/Silabus. Dari terminal:
 
 ```powershell
 php artisan rpp:export PAUD 1 "E:\xampp\htdocs\rpp-ppg\output\RPP_2026-2027_PAUD_Semester_1.xlsx"
 ```
 
 Target awal Tilawati PAUD adalah halaman 1–22 pada Semester 1 dan 23–44 pada Semester 2. Admin dapat mengubah target halaman, ayat, surat, bab, atau label khusus melalui preview. Rentang halaman selalu ditulis sebagai teks agar Excel tidak mengubahnya menjadi tanggal.
+
+Angka **Pertemuan** pada Silabus dibaca sebagai intensitas per minggu, bukan durasi minggu. Pola seperti setiap minggu, minggu ke-1/3, atau minggu ke-2/4 dapat diubah melalui editor Silabus. Materi tentatif tetap tersedia untuk penjadwalan manual dan tidak diulang otomatis.
 
 ## Pengujian
 

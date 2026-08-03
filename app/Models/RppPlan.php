@@ -31,4 +31,9 @@ class RppPlan extends Model
     {
         return $this->hasMany(RppProgressTarget::class);
     }
+
+    public function monthFocuses()
+    {
+        return $this->hasMany(RppMonthFocus::class);
+    }
 }

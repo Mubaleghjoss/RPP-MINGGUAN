@@ -30,7 +30,13 @@ class WorkbookFallbackTest extends TestCase
         $this->assertStringContainsString('PAUD', (string) $workbook->getSheet(0)->getCell('A1')->getValue());
         $this->assertSame(DataType::TYPE_STRING, $workbook->getSheet(0)->getCell('B9')->getDataType());
         $this->assertStringContainsString('1–22', (string) $workbook->getSheet(0)->getCell('B9')->getValue());
-        $this->assertStringNotContainsString('M27', collect($workbook->getSheet(1)->toArray())->flatten()->implode('|'));
+        $rppText = collect($workbook->getSheet(1)->toArray())->flatten()->implode('|');
+        $this->assertStringContainsString('TRIWULAN 1', $rppText);
+        $this->assertStringContainsString('TRIWULAN 2', $rppText);
+        $this->assertStringNotContainsString('TRIWULAN 3', $rppText);
+        $this->assertStringContainsString('I. Alim-Faqih', $rppText);
+        $this->assertNotEmpty($workbook->getSheet(1)->getMergeCells());
+        $this->assertTrue(collect($workbook->getSheet(1)->getComments())->contains(fn ($comment) => str_contains($comment->getText()->getPlainText(), 'Silabus:')));
         $workbook->disconnectWorksheets();
         unlink($destination);
     }

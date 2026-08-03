@@ -95,7 +95,7 @@ class SemesterRppTest extends TestCase
             ->call('selectSemester', 2)
             ->assertSee('RPP PAUD · Semester 2')
             ->assertSee('23–44')
-            ->assertSee('Preview 26 minggu');
+            ->assertSee('Matriks 26 minggu');
 
         $material = $paud->syllabusItems()->where('is_duplicate', false)->whereDoesntHave('progressTargets')->firstOrFail();
         $component

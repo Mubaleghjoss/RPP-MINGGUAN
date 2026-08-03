@@ -7,6 +7,9 @@ use App\Models\GgbSyllabusLink;
 use App\Models\Level;
 use App\Models\RevisionBatch;
 use App\Models\RevisionItem;
+use App\Models\RppMatrixColumn;
+use App\Models\RppMatrixMapping;
+use App\Models\RppMonthFocus;
 use App\Models\RppPlan;
 use App\Models\RppProgressTarget;
 use App\Models\RppWeekItem;
@@ -23,10 +26,13 @@ class CurriculumRevisionService
 {
     private const EDITABLE = [
         'ggb' => ['aspect', 'subaspect', 'title', 'target_text', 'sort_order'],
-        'syllabus' => ['category', 'title', 'description', 'allocation_text', 'recommended_sessions', 'reference_text', 'assessment_text', 'is_duplicate', 'semester_scope', 'sort_order'],
+        'syllabus' => ['category', 'title', 'description', 'allocation_text', 'recommended_sessions', 'schedule_pattern', 'reference_text', 'assessment_text', 'is_duplicate', 'semester_scope', 'sort_order'],
         'link' => ['status', 'notes'],
-        'rpp' => ['calendar_week_id', 'strand', 'content', 'progress_start', 'progress_end', 'progress_kind', 'position', 'is_locked'],
+        'rpp' => ['calendar_week_id', 'rpp_matrix_column_id', 'strand', 'content', 'progress_start', 'progress_end', 'progress_kind', 'position', 'is_locked'],
         'progress_target' => ['unit_label', 'range_start', 'range_end', 'strategy'],
+        'matrix_column' => ['aspect_label', 'subaspect_label', 'label', 'sort_order', 'width', 'is_active'],
+        'matrix_mapping' => ['rpp_matrix_column_id'],
+        'month_focus' => ['focus_text', 'is_locked'],
     ];
 
     public function applyBatch(array $patches, string $reason, User $user): RevisionBatch
@@ -66,8 +72,22 @@ class CurriculumRevisionService
                     $allocation = $changes['allocation_text'] ?? $model->allocation_text;
                     $sessions = $changes['recommended_sessions'] ?? $model->recommended_sessions;
                     $changes['needs_allocation'] = blank($allocation) || $sessions === null;
+                    if ($model->schedule_pattern_source === 'auto' && ! array_key_exists('schedule_pattern', $changes)) {
+                        $changes['schedule_pattern'] = app(RppSchedulePatternService::class)->detect($allocation);
+                    }
                 }
-                if ($domain === 'rpp' && array_intersect(array_keys($changes), ['calendar_week_id', 'strand', 'content', 'progress_start', 'progress_end', 'progress_kind', 'position'])) {
+                if ($domain === 'syllabus' && array_key_exists('schedule_pattern', $changes)) {
+                    $changes['schedule_pattern_source'] = 'manual';
+                }
+                if ($domain === 'rpp' && array_intersect(array_keys($changes), ['calendar_week_id', 'rpp_matrix_column_id', 'strand', 'content', 'progress_start', 'progress_end', 'progress_kind', 'position'])) {
+                    $changes['source'] = 'manual';
+                    $changes['is_locked'] = true;
+                }
+                if ($domain === 'rpp' && array_key_exists('rpp_matrix_column_id', $changes)) {
+                    $column = RppMatrixColumn::query()->findOrFail($changes['rpp_matrix_column_id']);
+                    $changes['strand'] = $column->label;
+                }
+                if ($domain === 'month_focus' && array_key_exists('focus_text', $changes)) {
                     $changes['source'] = 'manual';
                     $changes['is_locked'] = true;
                 }
@@ -75,6 +95,14 @@ class CurriculumRevisionService
                 $before = collect(array_keys($changes))->mapWithKeys(fn ($field) => [$field => $model->getAttribute($field)])->all();
                 $newVersion = $expectedVersion + 1;
                 $model->forceFill($changes + ['lock_version' => $newVersion, 'last_edited_by' => $user->id])->save();
+                if ($domain === 'matrix_mapping' && array_key_exists('rpp_matrix_column_id', $changes)) {
+                    $column = RppMatrixColumn::query()->findOrFail($changes['rpp_matrix_column_id']);
+                    RppWeekItem::query()->where('syllabus_item_id', $model->syllabus_item_id)->where('source', 'auto')->where('is_locked', false)
+                        ->update(['rpp_matrix_column_id' => $column->id, 'strand' => $column->label]);
+                }
+                if ($domain === 'matrix_column' && array_key_exists('label', $changes)) {
+                    RppWeekItem::query()->where('rpp_matrix_column_id', $model->id)->update(['strand' => $model->label]);
+                }
                 if ($domain === 'rpp' && $model->rpp_progress_target_id) {
                     $progressTargets[(int) $model->rpp_progress_target_id] = true;
                 }
@@ -257,6 +285,14 @@ class CurriculumRevisionService
                 $newVersion = (int) $model->lock_version + 1;
                 $restoreValues = $sourceItem->before_values;
                 $model->forceFill($restoreValues + ['lock_version' => $newVersion, 'last_edited_by' => $user->id])->save();
+                if ($sourceItem->revisable_type === 'matrix_mapping' && array_key_exists('rpp_matrix_column_id', $restoreValues)) {
+                    $column = RppMatrixColumn::query()->findOrFail($restoreValues['rpp_matrix_column_id']);
+                    RppWeekItem::query()->where('syllabus_item_id', $model->syllabus_item_id)->where('source', 'auto')->where('is_locked', false)
+                        ->update(['rpp_matrix_column_id' => $column->id, 'strand' => $column->label]);
+                }
+                if ($sourceItem->revisable_type === 'matrix_column' && array_key_exists('label', $restoreValues)) {
+                    RppWeekItem::query()->where('rpp_matrix_column_id', $model->id)->update(['strand' => $model->label]);
+                }
                 if (($model instanceof GgbSyllabusLink || $model instanceof RppProgressTarget) && array_key_exists('deleted_at', $restoreValues)) {
                     $restoreValues['deleted_at'] === null ? $model->restore() : $model->delete();
                 }
@@ -291,8 +327,10 @@ class CurriculumRevisionService
             'recommended_sessions' => ['nullable', 'integer', 'min:1', 'max:500'], 'reference_text' => ['nullable', 'string', 'max:5000'],
             'assessment_text' => ['nullable', 'string', 'max:5000'], 'is_duplicate' => ['boolean'],
             'semester_scope' => ['required', 'in:1,2,both'],
+            'schedule_pattern' => ['required', 'in:weekly,month_week_1,month_week_2,month_week_3,month_week_4,month_week_1_3,month_week_2_4,tentative,unknown'],
             'status' => ['required', 'in:sesuai,sebagian,perlu_verifikasi'], 'notes' => ['nullable', 'string', 'max:5000'],
             'calendar_week_id' => ['required', 'integer', 'min:1'], 'strand' => ['required', 'string', 'max:1000'],
+            'rpp_matrix_column_id' => ['required', 'integer', 'min:1'],
             'content' => ['required', 'string', 'max:10000'], 'position' => ['required', 'integer', 'min:1', 'max:1000'],
             'is_locked' => ['boolean'],
             'progress_start' => ['nullable', 'integer', 'min:1', 'max:1000000'],
@@ -302,14 +340,17 @@ class CurriculumRevisionService
             'range_start' => ['required', 'integer', 'min:1', 'max:1000000'],
             'range_end' => ['required', 'integer', 'min:1', 'max:1000000'],
             'strategy' => ['required', 'in:even'],
+            'aspect_label' => ['required', 'string', 'max:255'], 'subaspect_label' => ['nullable', 'string', 'max:255'],
+            'label' => ['required', 'string', 'max:255'], 'width' => ['required', 'integer', 'min:12', 'max:60'],
+            'is_active' => ['boolean'], 'focus_text' => ['nullable', 'string', 'max:500'],
         ];
         $normalized = [];
         foreach ($changes as $field => $value) {
-            if (in_array($field, ['sort_order', 'recommended_sessions', 'calendar_week_id', 'position', 'progress_start', 'progress_end', 'range_start', 'range_end'], true)) {
+            if (in_array($field, ['sort_order', 'recommended_sessions', 'calendar_week_id', 'rpp_matrix_column_id', 'position', 'progress_start', 'progress_end', 'range_start', 'range_end', 'width'], true)) {
                 $nullableNumber = in_array($field, ['recommended_sessions', 'progress_start', 'progress_end'], true);
                 $value = blank($value) && $nullableNumber ? null : (int) $value;
             }
-            if (in_array($field, ['is_duplicate', 'is_locked'], true)) {
+            if (in_array($field, ['is_duplicate', 'is_locked', 'is_active'], true)) {
                 $value = filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? (bool) $value;
             }
             if (is_string($value)) {
@@ -327,6 +368,23 @@ class CurriculumRevisionService
             if (! $valid) {
                 throw ValidationException::withMessages(['grid' => 'Materi hanya dapat dipindahkan ke minggu efektif.']);
             }
+        }
+        if ($domain === 'rpp' && isset($normalized['rpp_matrix_column_id'])) {
+            $item = $model instanceof RppWeekItem ? $model : throw new RuntimeException('Baris RPP tidak valid.');
+            $valid = RppMatrixColumn::query()->whereKey($normalized['rpp_matrix_column_id'])->where('level_id', $item->plan->level_id)->where('is_active', true)->exists();
+            if (! $valid) {
+                throw ValidationException::withMessages(['grid' => 'Kolom tujuan tidak aktif atau berasal dari jenjang lain.']);
+            }
+        }
+        if ($domain === 'matrix_mapping' && isset($normalized['rpp_matrix_column_id'])) {
+            $mapping = $model instanceof RppMatrixMapping ? $model : throw new RuntimeException('Pemetaan matriks tidak valid.');
+            $levelId = $mapping->syllabusItem()->value('level_id');
+            if (! RppMatrixColumn::query()->whereKey($normalized['rpp_matrix_column_id'])->where('level_id', $levelId)->exists()) {
+                throw ValidationException::withMessages(['grid' => 'Materi hanya dapat dipetakan ke kolom pada jenjang yang sama.']);
+            }
+        }
+        if ($domain === 'matrix_column' && (($normalized['is_active'] ?? true) === false) && $model->mappings()->exists()) {
+            throw ValidationException::withMessages(['grid' => 'Kolom yang masih memiliki materi tidak dapat dinonaktifkan. Pindahkan pemetaannya terlebih dahulu.']);
         }
         if ($domain === 'rpp') {
             $start = $normalized['progress_start'] ?? $model->progress_start;
@@ -354,6 +412,9 @@ class CurriculumRevisionService
             'link' => ($withTrashed ? GgbSyllabusLink::withTrashed() : GgbSyllabusLink::query())->findOrFail($id),
             'rpp' => RppWeekItem::query()->with('plan.academicYear')->findOrFail($id),
             'progress_target' => ($withTrashed ? RppProgressTarget::withTrashed() : RppProgressTarget::query())->with('plan')->findOrFail($id),
+            'matrix_column' => RppMatrixColumn::query()->findOrFail($id),
+            'matrix_mapping' => RppMatrixMapping::query()->with('syllabusItem')->findOrFail($id),
+            'month_focus' => RppMonthFocus::query()->with('plan')->findOrFail($id),
             default => throw ValidationException::withMessages(['grid' => 'Jenis tabel tidak valid.']),
         };
     }
@@ -363,7 +424,9 @@ class CurriculumRevisionService
         $levelId = match ($domain) {
             'ggb', 'syllabus' => $model->level_id,
             'link' => $model->syllabusItem()->value('level_id'),
-            'rpp', 'progress_target' => $model->plan()->value('level_id'),
+            'rpp', 'progress_target', 'month_focus' => $model->plan()->value('level_id'),
+            'matrix_column' => $model->level_id,
+            'matrix_mapping' => $model->syllabusItem()->value('level_id'),
             default => null,
         };
         if ($levelId) {

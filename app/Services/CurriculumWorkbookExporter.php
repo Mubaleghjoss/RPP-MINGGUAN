@@ -6,6 +6,7 @@ use App\Models\AcademicYear;
 use App\Models\Level;
 use App\Models\RppPlan;
 use App\Models\RppProgressTarget;
+use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 use PhpOffice\PhpSpreadsheet\Cell\DataType;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
@@ -22,19 +23,19 @@ class CurriculumWorkbookExporter
 
     private const GREEN_DARK = '14532D';
 
-    private const BORDER = 'CBD5E1';
+    private const BORDER = '64748B';
 
-    public function __construct(private readonly RppProgressService $progress) {}
+    public function __construct(
+        private readonly RppProgressService $progress,
+        private readonly RppMatrixService $matrix,
+        private readonly RppMatrixPresetService $presets,
+    ) {}
 
     public function activeYearLabel(): string
     {
         return AcademicYear::query()->where('is_active', true)->value('label') ?? '2026/2027';
     }
 
-    /**
-     * Kompatibilitas internal: workbook penuh dihentikan dan metode ini mengekspor
-     * jenjang pertama Semester 1.
-     */
     public function export(?string $destination = null, ?string $templatePath = null): string
     {
         return $this->exportLevelSemester(Level::query()->orderBy('sort_order')->firstOrFail(), 1, $destination);
@@ -44,15 +45,18 @@ class CurriculumWorkbookExporter
     {
         abort_unless(in_array($semester, [1, 2], true), 422);
         $year = AcademicYear::query()->where('is_active', true)->firstOrFail();
+        $this->presets->syncLevel($level);
         $plan = RppPlan::query()
             ->where('academic_year_id', $year->id)
             ->where('level_id', $level->id)
             ->where('semester', $semester)
             ->with([
-                'items.week',
-                'items.syllabusItem.document',
+                'level', 'academicYear', 'items.week', 'items.matrixColumn',
+                'items.syllabusItem.document', 'items.syllabusItem.ggbItems.document',
                 'progressTargets.syllabusItem.document',
             ])->firstOrFail();
+        $this->matrix->ensureMonthFocuses($plan);
+        $plan->load('monthFocuses');
         $weeks = $year->weeks()->where('semester', $semester)->orderBy('week_number')->get();
 
         $book = new Spreadsheet;
@@ -60,7 +64,7 @@ class CurriculumWorkbookExporter
         $book->getProperties()
             ->setCreator('Sistem RPP PPG')
             ->setTitle("RPP {$level->name} Semester {$semester} {$year->label}")
-            ->setDescription('Preview RPP per jenjang dan semester dengan target progres serta sumber halaman.');
+            ->setDescription('Matriks RPP per jenjang dan semester berdasarkan GGB dan Silabus.');
 
         $this->buildSummary($book, $plan);
         $this->buildRpp($book, $plan, $weeks);
@@ -96,20 +100,14 @@ class CurriculumWorkbookExporter
         foreach ($plan->progressTargets as $target) {
             /** @var RppProgressTarget $target */
             $summary = $this->progress->progressSummary($target);
-            $values = [
+            $this->writeTextRow($sheet, $row++, [
                 $target->syllabusItem->stable_code.' · '.$target->syllabusItem->title,
                 ucfirst($target->unit_label)." {$target->range_start}–{$target->range_end}",
-                $summary['achieved'].'/'.$summary['total'],
-                $summary['remaining'],
-                $summary['complete'] ? 'Tercapai' : 'Belum Tercapai',
-                $target->syllabusItem->allocation_text,
+                $summary['achieved'].'/'.$summary['total'], $summary['remaining'],
+                $summary['complete'] ? 'Tercapai' : 'Belum Tercapai', $target->syllabusItem->allocation_text,
                 $target->syllabusItem->document->title.' hlm. '.$target->syllabusItem->source_page,
                 $target->syllabusItem->source_semester === 'both' ? 'Semester 1 & 2' : 'Semester '.$target->syllabusItem->source_semester,
-            ];
-            foreach ($values as $column => $value) {
-                $sheet->setCellValueExplicit([$column + 1, $row], (string) $value, DataType::TYPE_STRING);
-            }
-            $row++;
+            ]);
         }
         if ($row === 9) {
             $sheet->mergeCells('A9:H9');
@@ -117,11 +115,25 @@ class CurriculumWorkbookExporter
             $row++;
         }
 
+        $row += 2;
+        $sheet->mergeCells("A{$row}:H{$row}");
+        $sheet->setCellValue("A{$row}", 'PEMETAAN KOLOM RPP');
+        $this->styleHeader($sheet, "A{$row}:H{$row}");
+        $row++;
+        $sheet->fromArray(['Aspek GGB', 'Subaspek', 'Kolom RPP', 'Jumlah Materi', 'Status', '', '', ''], null, "A{$row}");
+        $this->styleHeader($sheet, "A{$row}:H{$row}");
+        $row++;
+        foreach ($this->matrix->columns($plan) as $column) {
+            $this->writeTextRow($sheet, $row++, [
+                $column->aspect_label, $column->subaspect_label, $column->label,
+                $column->mappings_count, $column->is_active ? 'Aktif' : 'Nonaktif', '', '', '',
+            ]);
+        }
+
         $this->styleTitle($sheet, 'A1:H1');
-        $this->styleHeader($sheet, 'A8:H8');
-        $sheet->getStyle('A8:H'.($row - 1))->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN);
+        $sheet->getStyle('A8:H'.($row - 1))->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN)->setColor(new Color(self::BORDER));
         $sheet->getStyle('A3:H'.($row - 1))->getAlignment()->setVertical(Alignment::VERTICAL_TOP)->setWrapText(true);
-        foreach (['A' => 46, 'B' => 24, 'C' => 16, 'D' => 12, 'E' => 18, 'F' => 34, 'G' => 40, 'H' => 20] as $column => $width) {
+        foreach (['A' => 46, 'B' => 28, 'C' => 26, 'D' => 14, 'E' => 20, 'F' => 34, 'G' => 42, 'H' => 20] as $column => $width) {
             $sheet->getColumnDimension($column)->setWidth($width);
         }
         $sheet->freezePane('A9');
@@ -130,66 +142,128 @@ class CurriculumWorkbookExporter
 
     private function buildRpp(Spreadsheet $book, RppPlan $plan, $weeks): void
     {
-        $name = "RPP Semester {$plan->semester}";
-        $sheet = new Worksheet($book, $name);
+        $sheet = new Worksheet($book, "RPP Semester {$plan->semester}");
         $book->addSheet($sheet);
-        $sheet->mergeCells('A1:J1');
-        $sheet->mergeCells('A2:J2');
-        $sheet->setCellValue('A1', 'RENCANA PROGRAM PEMBELAJARAN GLOBAL MINGGUAN');
-        $sheet->setCellValue('A2', strtoupper($plan->level->name)." · SEMESTER {$plan->semester} · TAHUN AJARAN {$plan->academicYear->label}");
-        $sheet->fromArray(['Pekan', 'Tanggal', 'Jenis Minggu', 'Kategori', 'Materi', 'Rentang Progres', 'Jenis Progres', 'Posisi', 'Kunci', 'Sumber'], null, 'A4');
+        $columns = $this->matrix->columns($plan);
+        $itemsByCell = $this->matrix->itemsByCell($plan);
+        $lastColumnIndex = 5 + $columns->count();
+        $lastColumn = Coordinate::stringFromColumnIndex($lastColumnIndex);
+        $materialStart = 5;
+        $materialEnd = 4 + $columns->count();
+        $row = 1;
 
-        $itemsByWeek = $plan->items->sortBy(fn ($item) => sprintf('%03d-%03d', $item->week->week_number, $item->position))->groupBy('calendar_week_id');
-        $row = 5;
-        foreach ($weeks as $week) {
-            $items = collect($itemsByWeek->get($week->id, []));
-            if ($items->isEmpty()) {
-                $values = [
-                    'M'.$week->week_number,
-                    $week->starts_on->format('d-m-Y'),
-                    $this->weekType($week->type),
-                    '',
-                    $week->is_effective ? '' : ($week->label ?: $this->weekType($week->type)),
-                    '', '', '', '', '',
-                ];
-                $this->writeTextRow($sheet, $row++, $values);
+        foreach ($weeks->chunk(13)->values() as $trimesterIndex => $trimesterWeeks) {
+            $trimester = $this->matrix->trimesterNumber((int) $plan->semester, $trimesterIndex);
+            $titleRow = $row;
+            $sheet->mergeCells("A{$row}:{$lastColumn}{$row}");
+            $sheet->setCellValue("A{$row}", 'RENCANA PROGRAM PEMBELAJARAN');
+            $row++;
+            $sheet->mergeCells("A{$row}:{$lastColumn}{$row}");
+            $sheet->setCellValue("A{$row}", strtoupper($plan->level->name)." · SEMESTER {$plan->semester} · TRIWULAN {$trimester} · {$plan->academicYear->label}");
+            $row += 2;
 
-                continue;
+            $headerStart = $row;
+            foreach ([1 => 'BULAN', 2 => "Fokus\n29 Karakter Luhur", 3 => 'Pekan', 4 => 'Tanggal'] as $column => $label) {
+                $coordinate = Coordinate::stringFromColumnIndex($column);
+                $sheet->mergeCells("{$coordinate}{$row}:{$coordinate}".($row + 2));
+                $sheet->setCellValue("{$coordinate}{$row}", $label);
             }
-            foreach ($items as $item) {
-                $range = $item->progress_start !== null
-                    ? ($item->progress_start === $item->progress_end ? (string) $item->progress_start : "{$item->progress_start}–{$item->progress_end}")
-                    : '';
-                $values = [
-                    'M'.$week->week_number,
-                    $week->starts_on->format('d-m-Y'),
-                    $this->weekType($week->type),
-                    $item->strand,
-                    $item->content,
-                    $range,
-                    match ($item->progress_kind) {
-                        'materi_baru' => 'Materi Baru', 'penguatan' => 'Penguatan', default => ''
-                    },
-                    $item->position,
-                    $item->is_locked ? 'Dikunci' : 'Terbuka',
-                    $item->syllabusItem->document->title.' hlm. '.$item->syllabusItem->source_page,
-                ];
-                $this->writeTextRow($sheet, $row++, $values);
+            $sheet->mergeCells("{$lastColumn}{$row}:{$lastColumn}".($row + 2));
+            $sheet->setCellValue("{$lastColumn}{$row}", "Paraf\nPengajar");
+
+            $this->writeGroupedHeaders($sheet, $columns, 'aspect_label', $materialStart, $row);
+            $this->writeGroupedHeaders($sheet, $columns, 'subaspect_label', $materialStart, $row + 1);
+            foreach ($columns->values() as $index => $column) {
+                $sheet->setCellValue([5 + $index, $row + 2], $column->label);
             }
+            $row += 3;
+
+            $monthRanges = [];
+            foreach ($trimesterWeeks as $week) {
+                $monthKey = $week->starts_on->format('Y-m');
+                $monthRanges[$monthKey] ??= ['start' => $row, 'end' => $row];
+                $monthRanges[$monthKey]['end'] = $row;
+                $sheet->setCellValueExplicit([1, $row], mb_strtoupper($week->month_label), DataType::TYPE_STRING);
+                $focus = $plan->monthFocuses->firstWhere('month_key', $monthKey);
+                $sheet->setCellValueExplicit([2, $row], (string) $focus?->focus_text, DataType::TYPE_STRING);
+                $monthOrdinal = $trimesterWeeks->filter(fn ($candidate) => $candidate->starts_on->format('Y-m') === $monthKey && $candidate->week_number <= $week->week_number)->count();
+                $sheet->setCellValueExplicit([3, $row], (string) $monthOrdinal, DataType::TYPE_STRING);
+                $sheet->setCellValueExplicit([4, $row], $week->starts_on->format('d M Y'), DataType::TYPE_STRING);
+
+                if (! $week->is_effective) {
+                    $start = Coordinate::stringFromColumnIndex($materialStart);
+                    $end = Coordinate::stringFromColumnIndex($materialEnd);
+                    if ($start !== $end) {
+                        $sheet->mergeCells("{$start}{$row}:{$end}{$row}");
+                    }
+                    $sheet->setCellValue("{$start}{$row}", $week->label ?: $this->weekType($week->type));
+                    $sheet->getStyle("{$start}{$row}:{$end}{$row}")->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setRGB('FEF3C7');
+                } else {
+                    foreach ($columns->values() as $index => $column) {
+                        $cellItems = collect($itemsByCell->get($week->id.':'.$column->id, []));
+                        $value = $cellItems->map(function ($item) {
+                            $progress = $item->progress_start === null ? '' : "\n".($item->progress_kind === 'penguatan' ? 'Penguatan ' : '').$item->progress_start.'–'.$item->progress_end;
+
+                            return $item->content.$progress;
+                        })->implode("\n\n");
+                        $sheet->setCellValueExplicit([5 + $index, $row], $value, DataType::TYPE_STRING);
+                        if ($cellItems->isNotEmpty()) {
+                            $coordinate = Coordinate::stringFromColumnIndex(5 + $index).$row;
+                            $comment = $sheet->getComment($coordinate);
+                            $comment->setAuthor('Sistem RPP PPG');
+                            $comment->getText()->createTextRun($cellItems->map(fn ($item) => $this->matrix->sourceNote($item))->implode("\n\n---\n\n"));
+                        }
+                    }
+                }
+                $sheet->setCellValueExplicit([$lastColumnIndex, $row], '', DataType::TYPE_STRING);
+                $sheet->getRowDimension($row)->setRowHeight(52);
+                $row++;
+            }
+
+            foreach ($monthRanges as $range) {
+                if ($range['start'] < $range['end']) {
+                    $sheet->mergeCells("A{$range['start']}:A{$range['end']}");
+                    $sheet->mergeCells("B{$range['start']}:B{$range['end']}");
+                }
+            }
+
+            $endRow = $row - 1;
+            $this->styleTitle($sheet, "A{$titleRow}:{$lastColumn}".($titleRow + 1));
+            $this->styleHeader($sheet, "A{$headerStart}:{$lastColumn}".($headerStart + 2));
+            $sheet->getStyle("A{$headerStart}:{$lastColumn}{$endRow}")->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN)->setColor(new Color(self::BORDER));
+            $sheet->getStyle("A{$headerStart}:{$lastColumn}{$endRow}")->getAlignment()->setVertical(Alignment::VERTICAL_CENTER)->setWrapText(true);
+            $sheet->getStyle("A{$headerStart}:{$lastColumn}".($headerStart + 2))->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
+            if ($trimesterIndex === 0) {
+                $sheet->setBreak('A'.$row, Worksheet::BREAK_ROW);
+            }
+            $row += 2;
         }
 
-        $end = $row - 1;
-        $this->styleTitle($sheet, 'A1:J2');
-        $this->styleHeader($sheet, 'A4:J4');
-        $sheet->getStyle("A4:J{$end}")->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN)->setColor(new Color(self::BORDER));
-        $sheet->getStyle("A5:J{$end}")->getAlignment()->setVertical(Alignment::VERTICAL_TOP)->setWrapText(true);
-        foreach (['A' => 10, 'B' => 16, 'C' => 18, 'D' => 28, 'E' => 58, 'F' => 18, 'G' => 18, 'H' => 10, 'I' => 14, 'J' => 40] as $column => $width) {
-            $sheet->getColumnDimension($column)->setWidth($width);
+        foreach ([1 => 10, 2 => 20, 3 => 8, 4 => 15] as $index => $width) {
+            $sheet->getColumnDimension(Coordinate::stringFromColumnIndex($index))->setWidth($width);
         }
-        $sheet->freezePane('D5');
-        $sheet->setAutoFilter("A4:J{$end}");
+        foreach ($columns->values() as $index => $column) {
+            $sheet->getColumnDimension(Coordinate::stringFromColumnIndex(5 + $index))->setWidth(max(14, min(36, $column->width)));
+        }
+        $sheet->getColumnDimension($lastColumn)->setWidth(14);
+        $sheet->freezePane('E7');
         $sheet->getPageSetup()->setOrientation(PageSetup::ORIENTATION_LANDSCAPE)->setPaperSize(PageSetup::PAPERSIZE_A4)->setFitToWidth(1)->setFitToHeight(0);
-        $sheet->getPageSetup()->setRowsToRepeatAtTopByStartAndEnd(1, 4);
+        $sheet->getPageMargins()->setTop(0.3)->setBottom(0.3)->setLeft(0.2)->setRight(0.2);
+        $sheet->getPageSetup()->setPrintArea("A1:{$lastColumn}".($row - 1));
+    }
+
+    private function writeGroupedHeaders(Worksheet $sheet, $columns, string $field, int $startColumn, int $row): void
+    {
+        $cursor = $startColumn;
+        foreach ($this->matrix->headerGroups($columns, $field) as $group) {
+            $start = Coordinate::stringFromColumnIndex($cursor);
+            $end = Coordinate::stringFromColumnIndex($cursor + $group['span'] - 1);
+            if ($start !== $end) {
+                $sheet->mergeCells("{$start}{$row}:{$end}{$row}");
+            }
+            $sheet->setCellValue("{$start}{$row}", $group['label']);
+            $cursor += $group['span'];
+        }
     }
 
     private function writeTextRow(Worksheet $sheet, int $row, array $values): void
@@ -202,7 +276,7 @@ class CurriculumWorkbookExporter
     private function styleTitle(Worksheet $sheet, string $range): void
     {
         $sheet->getStyle($range)->applyFromArray([
-            'font' => ['bold' => true, 'color' => ['rgb' => 'FFFFFF'], 'size' => 14],
+            'font' => ['bold' => true, 'color' => ['rgb' => 'FFFFFF'], 'size' => 13],
             'fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['rgb' => self::GREEN_DARK]],
             'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER, 'vertical' => Alignment::VERTICAL_CENTER, 'wrapText' => true],
         ]);
@@ -220,10 +294,7 @@ class CurriculumWorkbookExporter
     private function weekType(string $type): string
     {
         return match ($type) {
-            'evaluation' => 'Evaluasi',
-            'holiday' => 'Libur',
-            'religious_holiday' => 'Hari Raya',
-            default => 'Minggu Efektif',
+            'evaluation' => 'Evaluasi', 'holiday' => 'Libur', 'religious_holiday' => 'Hari Raya', default => 'Minggu Efektif',
         };
     }
 }

@@ -30,6 +30,11 @@ class RppWeekItem extends Model
         return $this->belongsTo(RppProgressTarget::class, 'rpp_progress_target_id');
     }
 
+    public function matrixColumn()
+    {
+        return $this->belongsTo(RppMatrixColumn::class, 'rpp_matrix_column_id');
+    }
+
     public function editor()
     {
         return $this->belongsTo(User::class, 'last_edited_by');

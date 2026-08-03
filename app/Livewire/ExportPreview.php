@@ -4,13 +4,19 @@ namespace App\Livewire;
 
 use App\Models\AcademicYear;
 use App\Models\Level;
+use App\Models\RppMatrixColumn;
+use App\Models\RppMatrixMapping;
+use App\Models\RppMonthFocus;
 use App\Models\RppPlan;
 use App\Models\RppProgressTarget;
 use App\Models\RppWeekItem;
 use App\Models\SyllabusItem;
 use App\Services\CurriculumRevisionService;
+use App\Services\RppMatrixPresetService;
+use App\Services\RppMatrixService;
 use App\Services\RppPlanner;
 use App\Services\RppProgressService;
+use App\Services\RppSchedulePatternService;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\ValidationException;
 use Livewire\Attributes\Layout;
@@ -143,8 +149,15 @@ class ExportPreview extends Component
         try {
             $plan = $this->plan();
             foreach ($patches as $patch) {
-                abort_unless(($patch['domain'] ?? null) === 'rpp', 422);
-                abort_unless(RppWeekItem::query()->where('rpp_plan_id', $plan->id)->whereKey((int) ($patch['id'] ?? 0))->exists(), 422);
+                $id = (int) ($patch['id'] ?? 0);
+                $valid = match ($patch['domain'] ?? null) {
+                    'rpp' => RppWeekItem::query()->where('rpp_plan_id', $plan->id)->whereKey($id)->exists(),
+                    'month_focus' => RppMonthFocus::query()->where('rpp_plan_id', $plan->id)->whereKey($id)->exists(),
+                    'matrix_column' => RppMatrixColumn::query()->where('level_id', $plan->level_id)->whereKey($id)->exists(),
+                    'matrix_mapping' => RppMatrixMapping::query()->whereKey($id)->whereHas('syllabusItem', fn ($query) => $query->where('level_id', $plan->level_id))->exists(),
+                    default => false,
+                };
+                abort_unless($valid, 422);
             }
             $batch = $revisions->applyBatch($patches, $reason, Auth::user());
             app(RppPlanner::class)->refreshCoverage($plan);
@@ -184,17 +197,33 @@ class ExportPreview extends Component
             : 'Validasi ditahan: cakupan atau target progres belum lengkap.';
     }
 
-    public function render(RppProgressService $progress)
-    {
+    public function render(
+        RppProgressService $progress,
+        RppMatrixPresetService $presets,
+        RppMatrixService $matrix,
+        RppSchedulePatternService $patterns,
+    ) {
+        $presets->syncLevel($this->level());
         $plan = $this->plan()->load([
             'level',
             'academicYear.weeks' => fn ($query) => $query->where('semester', $this->semester)->orderBy('week_number'),
             'items.week',
+            'items.matrixColumn',
             'items.syllabusItem.document',
+            'items.syllabusItem.ggbItems.document',
             'progressTargets.syllabusItem.document',
         ]);
+        $matrix->ensureMonthFocuses($plan);
+        $plan->load('monthFocuses');
         $weeks = $plan->academicYear->weeks;
-        $itemsByWeek = $plan->items->sortBy(fn ($item) => sprintf('%03d-%03d', $item->week->week_number, $item->position))->groupBy('calendar_week_id');
+        $monthOrdinals = [];
+        foreach ($weeks as $week) {
+            $key = $week->starts_on->format('Y-m');
+            $monthOrdinals[$key] = ($monthOrdinals[$key] ?? 0) + 1;
+            $week->setAttribute('month_ordinal', $monthOrdinals[$key]);
+        }
+        $columns = $matrix->columns($plan);
+        $itemsByCell = $matrix->itemsByCell($plan);
         $targets = $plan->progressTargets->map(function (RppProgressTarget $target) use ($progress) {
             $target->setAttribute('summary', $progress->progressSummary($target));
 
@@ -209,12 +238,27 @@ class ExportPreview extends Component
         $annualTargets = $plan->level->code === 'PAUD'
             ? RppProgressTarget::query()->with('placements')->whereHas('plan', fn ($query) => $query->where('academic_year_id', $plan->academic_year_id)->where('level_id', $plan->level_id))->whereHas('syllabusItem', fn ($query) => $query->where('title', 'like', '%Tilawati%'))->get()
             : collect();
+        $layoutColumns = $plan->level->matrixColumns()->withCount('mappings')->orderBy('sort_order')->orderBy('id')->get();
+        $layoutMappings = $plan->level->syllabusItems()->where('is_duplicate', false)->with(['matrixMapping.column'])->orderBy('sort_order')->get();
+        $unmappedCount = $layoutMappings->filter(fn ($item) => ! $item->matrixMapping)->count();
+        $patternIssues = $layoutMappings
+            ->whereIn('semester_scope', [(string) $this->semester, 'both'])
+            ->filter(fn ($item) => in_array($item->schedule_pattern, ['unknown', 'tentative'], true) && ! $plan->items->contains('syllabus_item_id', $item->id));
 
         return view('livewire.export-preview', [
             'levels' => Level::query()->orderBy('sort_order')->get(),
             'plan' => $plan,
             'weeks' => $weeks,
-            'itemsByWeek' => $itemsByWeek,
+            'columns' => $columns,
+            'aspectGroups' => $matrix->headerGroups($columns, 'aspect_label'),
+            'subaspectGroups' => $matrix->headerGroups($columns, 'subaspect_label'),
+            'itemsByCell' => $itemsByCell,
+            'monthRows' => $matrix->monthRows($weeks, $plan->monthFocuses),
+            'trimesterChunks' => $weeks->chunk(13)->values(),
+            'layoutColumns' => $layoutColumns,
+            'layoutMappings' => $layoutMappings,
+            'patternIssues' => $patternIssues,
+            'patternLabels' => collect(RppSchedulePatternService::PATTERNS)->mapWithKeys(fn ($pattern) => [$pattern => $patterns->label($pattern)]),
             'targets' => $targets,
             'eligibleMaterials' => $eligible,
             'effectiveWeeks' => $weeks->where('is_effective', true)->values(),
@@ -222,7 +266,8 @@ class ExportPreview extends Component
             'targetAchieved' => $targets->sum(fn ($target) => $target->summary['achieved']),
             'annualTargetTotal' => $annualTargets->sum(fn ($target) => $progress->progressSummary($target)['total']),
             'annualTargetAchieved' => $annualTargets->sum(fn ($target) => $progress->progressSummary($target)['achieved']),
-            'conflictCount' => 0,
+            'conflictCount' => $unmappedCount + $patternIssues->count(),
+            'unmappedCount' => $unmappedCount,
         ]);
     }
 
@@ -239,6 +284,11 @@ class ExportPreview extends Component
     private function assertLevel(): void
     {
         abort_unless($this->levelId && Level::query()->whereKey($this->levelId)->exists(), 404);
+    }
+
+    private function level(): Level
+    {
+        return Level::query()->findOrFail($this->levelId);
     }
 
     private function resetTargetForm(): void

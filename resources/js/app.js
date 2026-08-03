@@ -9,6 +9,8 @@ window.spreadsheetGrid = (domain) => ({
     reason: '',
     saving: false,
     clientMessage: '',
+    editorOpen: false,
+    editor: null,
 
     init() {
         this.prepareCells();
@@ -61,8 +63,9 @@ window.spreadsheetGrid = (domain) => ({
         const original = String(cell.dataset.original ?? '');
         const value = this.readCellValue(cell);
         const next = { ...this.pending };
-        const activeDomain = this.$root.dataset.gridDomain || this.domain;
-        const patch = next[id] ? { ...next[id], changes: { ...next[id].changes } } : {
+        const activeDomain = cell.dataset.domain || this.$root.dataset.gridDomain || this.domain;
+        const patchKey = `${activeDomain}:${id}`;
+        const patch = next[patchKey] ? { ...next[patchKey], changes: { ...next[patchKey].changes } } : {
             domain: activeDomain,
             id: Number(id),
             version: Number(cell.dataset.version),
@@ -72,15 +75,16 @@ window.spreadsheetGrid = (domain) => ({
         if (value === original) delete patch.changes[field];
         else patch.changes[field] = value;
 
-        if (Object.keys(patch.changes).length === 0) delete next[id];
-        else next[id] = patch;
+        if (Object.keys(patch.changes).length === 0) delete next[patchKey];
+        else next[patchKey] = patch;
         this.pending = next;
-        this.markMirrors(id, field, value, value !== original);
+        this.markMirrors(activeDomain, id, field, value, value !== original);
         this.clientMessage = '';
     },
 
-    markMirrors(id, field, value, dirty) {
+    markMirrors(domain, id, field, value, dirty) {
         this.$root.querySelectorAll(`[data-grid-cell][data-id="${CSS.escape(String(id))}"][data-field="${CSS.escape(field)}"]`).forEach((cell) => {
+            if ((cell.dataset.domain || this.$root.dataset.gridDomain || this.domain) !== domain) return;
             if (cell !== this.activeCell && this.readCellValue(cell) !== value) cell.value = value;
             cell.classList.toggle('grid-cell-dirty', dirty);
             cell.dataset.dirty = dirty ? 'true' : 'false';
@@ -117,9 +121,11 @@ window.spreadsheetGrid = (domain) => ({
     },
 
     clearDraft() {
-        Object.entries(this.pending).forEach(([id, patch]) => {
+        Object.values(this.pending).forEach((patch) => {
+            const id = String(patch.id);
             Object.keys(patch.changes).forEach((field) => {
                 this.$root.querySelectorAll(`[data-grid-cell][data-id="${CSS.escape(id)}"][data-field="${CSS.escape(field)}"]`).forEach((cell) => {
+                    if ((cell.dataset.domain || this.$root.dataset.gridDomain || this.domain) !== patch.domain) return;
                     cell.value = cell.dataset.original ?? '';
                     cell.classList.remove('grid-cell-dirty');
                     cell.dataset.dirty = 'false';
@@ -129,6 +135,7 @@ window.spreadsheetGrid = (domain) => ({
         });
         this.pending = {};
         this.clientMessage = '';
+        this.editorOpen = false;
     },
 
     async save() {
@@ -158,6 +165,7 @@ window.spreadsheetGrid = (domain) => ({
             }
             this.pending = {};
             this.reason = '';
+            this.editorOpen = false;
             this.$nextTick(() => {
                 this.$root.querySelectorAll('[data-grid-cell]').forEach((cell) => {
                     cell.dataset.original = this.readCellValue(cell);
@@ -179,6 +187,37 @@ window.spreadsheetGrid = (domain) => ({
             event.preventDefault();
             this.save();
         }
+    },
+
+    openMatrixItem(item) {
+        const domain = 'rpp';
+        const key = `${domain}:${item.id}`;
+        const changes = this.pending[key]?.changes ?? {};
+        this.editor = {
+            ...item,
+            original_calendar_week_id: String(item.calendar_week_id ?? ''),
+            original_rpp_matrix_column_id: String(item.rpp_matrix_column_id ?? ''),
+            original_content: String(item.content ?? ''),
+            original_progress_start: String(item.progress_start ?? ''),
+            original_progress_end: String(item.progress_end ?? ''),
+            original_progress_kind: String(item.progress_kind ?? ''),
+            original_position: String(item.position ?? 1),
+            original_is_locked: String(item.is_locked ?? '0'),
+            calendar_week_id: String(changes.calendar_week_id ?? item.calendar_week_id ?? ''),
+            rpp_matrix_column_id: String(changes.rpp_matrix_column_id ?? item.rpp_matrix_column_id ?? ''),
+            content: String(changes.content ?? item.content ?? ''),
+            progress_start: String(changes.progress_start ?? item.progress_start ?? ''),
+            progress_end: String(changes.progress_end ?? item.progress_end ?? ''),
+            progress_kind: String(changes.progress_kind ?? item.progress_kind ?? ''),
+            position: String(changes.position ?? item.position ?? 1),
+            is_locked: String(changes.is_locked ?? item.is_locked ?? '0'),
+        };
+        this.editorOpen = true;
+        this.$nextTick(() => this.$refs.matrixEditorContent?.focus());
+    },
+
+    closeMatrixEditor() {
+        this.editorOpen = false;
     },
 
     visibleCells() {

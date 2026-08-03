@@ -8,7 +8,9 @@ use App\Models\CalendarWeek;
 use App\Models\Level;
 use App\Models\RppPlan;
 use App\Models\SourceDocument;
+use App\Services\RppMatrixPresetService;
 use App\Services\RppPlanner;
+use App\Services\RppSchedulePatternService;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
@@ -79,6 +81,7 @@ class CurriculumSeeder extends Seeder
             });
 
             collect($data['syllabus_items'])->chunk(400)->each(function ($chunk) use ($levelIds, $documentIds, $now) {
+                $patterns = app(RppSchedulePatternService::class);
                 DB::table('syllabus_items')->insert($chunk->map(fn ($row) => [
                     'level_id' => $levelIds[$row['level_code']],
                     'source_document_id' => $documentIds[$row['document_key']],
@@ -104,6 +107,8 @@ class CurriculumSeeder extends Seeder
                     'reference_text' => $row['reference_text'],
                     'assessment_text' => $row['assessment_text'],
                     'recommended_sessions' => $row['recommended_sessions'],
+                    'schedule_pattern' => $patterns->detect($row['allocation_text']),
+                    'schedule_pattern_source' => 'auto',
                     'needs_allocation' => $row['needs_allocation'],
                     'is_duplicate' => $row['is_duplicate'] ?? false,
                     'source_page' => $row['source_page'],
@@ -200,6 +205,7 @@ class CurriculumSeeder extends Seeder
             }
         });
 
+        app(RppMatrixPresetService::class)->syncAll();
         app(RppPlanner::class)->generateAll();
     }
 }

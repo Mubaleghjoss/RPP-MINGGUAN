@@ -59,3 +59,14 @@ test('fill-down changes remain plain across multiple syllabus rows', () => {
     assert.deepEqual(patches.map((patch) => patch.changes.recommended_sessions), ['1', '1']);
     assert.doesNotThrow(() => JSON.stringify(patches));
 });
+
+test('matrix drafts can contain placement, focus, and layout domains atomically', () => {
+    const patches = normalizeGridPatches({
+        'rpp:12': { domain: 'rpp', id: 12, version: 2, changes: { content: 'Materi manual' } },
+        'month_focus:12': { domain: 'month_focus', id: 12, version: 0, changes: { focus_text: 'Rukun' } },
+        'matrix_column:4': { domain: 'matrix_column', id: 4, version: 1, changes: { label: 'Hafalan Surat' } },
+    });
+
+    assert.deepEqual(patches.map((patch) => patch.domain), ['rpp', 'month_focus', 'matrix_column']);
+    assert.doesNotThrow(() => JSON.stringify(patches));
+});

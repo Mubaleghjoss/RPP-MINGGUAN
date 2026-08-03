@@ -12,7 +12,7 @@ use Illuminate\Validation\ValidationException;
 
 class RppBulkActionService
 {
-    public function __construct(private readonly RppPlanner $planner) {}
+    public function __construct(private readonly RppPlanner $planner, private readonly RppMatrixPresetService $presets) {}
 
     public function updatePlacements(RppPlan $plan, array $placementIds, string $action, ?int $weekId, string $reason, ?int $userId): int
     {
@@ -21,6 +21,7 @@ class RppBulkActionService
 
         return DB::transaction(function () use ($plan, $ids, $action, $weekId, $reason, $userId) {
             $lockedPlan = RppPlan::query()->lockForUpdate()->findOrFail($plan->id);
+            $this->presets->syncLevel($lockedPlan->level);
             $week = $action === 'move' ? $this->effectiveWeek($lockedPlan, $weekId) : null;
             $items = RppWeekItem::query()
                 ->where('rpp_plan_id', $lockedPlan->id)
@@ -61,6 +62,7 @@ class RppBulkActionService
 
         return DB::transaction(function () use ($plan, $ids, $weekId, $reason, $userId, $activityAction) {
             $lockedPlan = RppPlan::query()->lockForUpdate()->findOrFail($plan->id);
+            $this->presets->syncLevel($lockedPlan->level);
             $week = $this->effectiveWeek($lockedPlan, $weekId);
             $items = SyllabusItem::query()
                 ->where('level_id', $lockedPlan->level_id)
@@ -70,6 +72,7 @@ class RppBulkActionService
                 ->whereIn('semester_scope', [(string) $lockedPlan->semester, 'both'])
                 ->whereDoesntHave('placements', fn ($query) => $query->where('rpp_plan_id', $lockedPlan->id))
                 ->lockForUpdate()
+                ->with('matrixMapping.column')
                 ->get();
 
             if ($items->count() !== count($ids)) {
@@ -85,11 +88,16 @@ class RppBulkActionService
                 ->max('position');
 
             foreach ($items->sortBy('sort_order') as $item) {
+                $column = $item->matrixMapping?->column;
+                if (! $column || ! $column->is_active) {
+                    throw ValidationException::withMessages(['selection' => "Materi {$item->stable_code} belum dipetakan ke kolom matriks aktif."]);
+                }
                 RppWeekItem::query()->create([
                     'rpp_plan_id' => $lockedPlan->id,
                     'calendar_week_id' => $week->id,
                     'syllabus_item_id' => $item->id,
-                    'strand' => trim($item->category) ?: 'Materi',
+                    'rpp_matrix_column_id' => $column->id,
+                    'strand' => $column->label,
                     'content' => $item->title,
                     'source' => 'manual',
                     'is_locked' => true,

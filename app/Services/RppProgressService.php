@@ -44,6 +44,11 @@ class RppProgressService
         }
 
         $target->loadMissing('syllabusItem');
+        $target->syllabusItem->loadMissing('matrixMapping.column');
+        $column = $target->syllabusItem->matrixMapping?->column;
+        if (! $column || ! $column->is_active) {
+            throw ValidationException::withMessages(['progress' => "Target {$target->syllabusItem->stable_code} belum dipetakan ke kolom matriks aktif."]);
+        }
         if (! in_array($target->syllabusItem->semester_scope, [(string) $plan->semester, 'both'], true)) {
             throw ValidationException::withMessages(['progress' => "Target {$target->syllabusItem->stable_code} bukan bagian dari Semester {$plan->semester}. Ubah semester efektif atau nonaktifkan target terlebih dahulu."]);
         }
@@ -71,12 +76,12 @@ class RppProgressService
                 continue;
             }
 
-            $this->generateSegment($plan, $target, $pendingWeeks, $cursor, (int) $anchor->progress_start - 1);
+            $this->generateSegment($plan, $target, $column, $pendingWeeks, $cursor, (int) $anchor->progress_start - 1);
             $pendingWeeks = collect();
             $cursor = (int) $anchor->progress_end + 1;
         }
 
-        $this->generateSegment($plan, $target, $pendingWeeks, $cursor, (int) $target->range_end);
+        $this->generateSegment($plan, $target, $column, $pendingWeeks, $cursor, (int) $target->range_end);
 
         RppWeekItem::query()
             ->where('rpp_plan_id', $plan->id)
@@ -166,7 +171,7 @@ class RppProgressService
         }
     }
 
-    private function generateSegment(RppPlan $plan, RppProgressTarget $target, Collection $weeks, int $start, int $end): void
+    private function generateSegment(RppPlan $plan, RppProgressTarget $target, $column, Collection $weeks, int $start, int $end): void
     {
         $unitCount = max(0, $end - $start + 1);
         if ($unitCount > 0 && $weeks->isEmpty()) {
@@ -206,7 +211,8 @@ class RppProgressService
                 ],
                 [
                     'rpp_progress_target_id' => $target->id,
-                    'strand' => trim((string) $target->syllabusItem->category) ?: 'Materi',
+                    'rpp_matrix_column_id' => $column->id,
+                    'strand' => $column->label,
                     'content' => $content,
                     'progress_start' => $newStart,
                     'progress_end' => $newEnd,

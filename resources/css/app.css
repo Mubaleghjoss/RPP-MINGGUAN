@@ -56,6 +56,30 @@
     .preview-grid [data-grid-cell] { @apply min-h-11 rounded-lg border border-slate-300 bg-white px-2 py-2 text-sm text-slate-900 outline-none; }
     .preview-grid textarea[data-grid-cell] { @apply resize-y leading-5; }
     .preview-grid .grid-cell-dirty { @apply bg-amber-50 font-medium ring-2 ring-inset ring-amber-500; background-image: linear-gradient(135deg, #b45309 0 8px, transparent 8px); }
+    .matrix-scroll { overscroll-behavior-x: contain; }
+    .rpp-matrix-table { @apply min-w-max border-separate border-spacing-0 text-xs text-slate-800; }
+    .rpp-matrix-table th { @apply sticky top-0 z-20 border-b border-r border-slate-400 bg-slate-100 px-2 py-2 text-center font-semibold leading-4 text-slate-900; }
+    .rpp-matrix-table thead tr:nth-child(2) th { top: 49px; }
+    .rpp-matrix-table thead tr:nth-child(3) th { top: 82px; }
+    .rpp-matrix-table td { @apply border-b border-r border-slate-300 bg-white px-2 py-2 align-top; }
+    .rpp-matrix-table tbody tr:hover td { @apply bg-emerald-50/30; }
+    .rpp-matrix-table .matrix-aspect { @apply bg-emerald-100 text-emerald-950; }
+    .rpp-matrix-table .matrix-subaspect { @apply bg-emerald-50 text-emerald-900; }
+    .rpp-matrix-table .matrix-sticky { @apply sticky z-10 bg-white; }
+    .rpp-matrix-table th.matrix-sticky { @apply z-40 bg-slate-100; }
+    .rpp-matrix-table .matrix-month { left: 0; width: 5rem; min-width: 5rem; max-width: 5rem; }
+    .rpp-matrix-table .matrix-focus { left: 5rem; width: 11rem; min-width: 11rem; max-width: 11rem; }
+    .rpp-matrix-table .matrix-week { left: 16rem; width: 4rem; min-width: 4rem; max-width: 4rem; }
+    .rpp-matrix-table .matrix-date { left: 20rem; width: 7rem; min-width: 7rem; max-width: 7rem; }
+    .rpp-matrix-table .matrix-sign { width: 7rem; min-width: 7rem; }
+    .rpp-matrix-table .matrix-content-cell { min-width: 15rem; max-width: 24rem; }
+    .rpp-matrix-table .matrix-month-start td { @apply border-t-2 border-t-emerald-700; }
+    .rpp-matrix-table .matrix-non-effective { @apply bg-amber-50 py-4 text-center font-semibold text-amber-900; }
+    .rpp-matrix-table textarea[data-grid-cell] { @apply min-h-16 w-full resize-y rounded-md border border-transparent bg-transparent p-1 text-xs leading-4 hover:border-slate-300 focus:bg-white; }
+    .matrix-item-button { @apply mb-1 block min-h-11 w-full rounded-lg border border-transparent px-2 py-1.5 text-left leading-4 transition-colors duration-150 hover:border-emerald-300 hover:bg-emerald-50 focus-visible:border-emerald-600; }
+    .matrix-item-button:last-child { @apply mb-0; }
+    .matrix-item-button span { @apply block whitespace-pre-line; }
+    .matrix-item-button small { @apply mt-1 block font-mono text-[10px] font-semibold tabular-nums text-emerald-800; }
 }
 
 @media (max-width: 767px) {

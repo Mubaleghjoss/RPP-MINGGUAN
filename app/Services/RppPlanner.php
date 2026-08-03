@@ -11,7 +11,12 @@ use Illuminate\Validation\ValidationException;
 
 class RppPlanner
 {
-    public function __construct(private readonly RppProgressService $progress) {}
+    public function __construct(
+        private readonly RppProgressService $progress,
+        private readonly RppMatrixPresetService $presets,
+        private readonly RppSchedulePatternService $patterns,
+        private readonly RppMatrixService $matrix,
+    ) {}
 
     public function scheduleOne(RppPlan $plan, int $syllabusItemId, ?int $userId): RppWeekItem
     {
@@ -49,7 +54,14 @@ class RppPlanner
                 throw ValidationException::withMessages(['material' => 'Materi ini sudah dijadwalkan. Muat ulang halaman untuk melihat jadwal terbaru.']);
             }
 
-            $strand = trim((string) $item->category) ?: 'Materi';
+            $this->presets->syncLevel($lockedPlan->level);
+            $item->load('matrixMapping.column');
+            $column = $item->matrixMapping?->column;
+            if (! $column || ! $column->is_active) {
+                throw ValidationException::withMessages(['material' => 'Materi belum dipetakan ke kolom matriks yang aktif.']);
+            }
+
+            $strand = $column->label;
             $siblings = SyllabusItem::query()
                 ->where('level_id', $lockedPlan->level_id)
                 ->where('is_duplicate', false)
@@ -81,6 +93,7 @@ class RppPlanner
                 'rpp_plan_id' => $lockedPlan->id,
                 'calendar_week_id' => $week->id,
                 'syllabus_item_id' => $item->id,
+                'rpp_matrix_column_id' => $column->id,
                 'strand' => $strand,
                 'content' => $item->title,
                 'source' => 'auto',
@@ -115,7 +128,8 @@ class RppPlanner
         return DB::transaction(function () use ($plan) {
             // Selalu muat ulang agar perubahan manual/kunci dari request lain
             // menjadi sumber kebenaran saat penyusunan ulang.
-            $plan->load(['level.syllabusItems', 'academicYear.weeks', 'items', 'progressTargets.syllabusItem']);
+            $this->presets->syncLevel($plan->level);
+            $plan->load(['level.syllabusItems.matrixMapping.column', 'level.syllabusItems.ggbItems', 'academicYear.weeks', 'items.week', 'progressTargets.syllabusItem']);
             $this->progress->ensureDefaults($plan);
             $plan->load('progressTargets.syllabusItem');
             $weeks = $plan->academicYear->weeks
@@ -131,7 +145,6 @@ class RppPlanner
                 return $plan;
             }
 
-            $lockedSyllabusIds = $plan->items->where('is_locked', true)->pluck('syllabus_item_id')->all();
             $plan->items()->where('source', 'auto')->where('is_locked', false)->delete();
 
             foreach ($plan->progressTargets as $target) {
@@ -141,42 +154,104 @@ class RppPlanner
             $progressSyllabusIds = $plan->progressTargets->pluck('syllabus_item_id')->all();
 
             $groups = $plan->level->syllabusItems
-                ->whereNotIn('id', $lockedSyllabusIds)
                 ->whereNotIn('id', $progressSyllabusIds)
                 ->where('is_duplicate', false)
                 ->where('needs_allocation', false)
                 ->whereIn('semester_scope', [(string) $plan->semester, 'both'])
-                ->filter(fn (SyllabusItem $item) => filled($item->allocation_text) && (int) $item->recommended_sessions >= 1)
+                ->filter(fn (SyllabusItem $item) => filled($item->allocation_text) && (int) $item->recommended_sessions >= 1 && $item->matrixMapping?->column?->is_active)
                 ->sortBy('sort_order')
-                ->groupBy(fn ($item) => trim($item->category) ?: 'Materi');
+                ->groupBy(fn ($item) => $item->matrixMapping->rpp_matrix_column_id);
 
-            foreach ($groups as $strand => $items) {
-                $items = $items->values();
-                $count = max(1, $items->count());
-                foreach ($items as $index => $item) {
-                    $weekIndex = min($weeks->count() - 1, (int) floor(($index * $weeks->count()) / $count));
-                    RppWeekItem::updateOrCreate(
-                        [
-                            'rpp_plan_id' => $plan->id,
-                            'calendar_week_id' => $weeks[$weekIndex]->id,
-                            'syllabus_item_id' => $item->id,
-                        ],
-                        [
-                            'strand' => $strand,
-                            'content' => $item->title,
-                            'source' => 'auto',
-                            'is_locked' => false,
-                            'position' => 1,
-                        ]
-                    );
+            $allSemesterWeeks = $plan->academicYear->weeks->where('semester', (int) $plan->semester)->sortBy('week_number')->values();
+            foreach ($groups as $columnId => $columnItems) {
+                $column = $columnItems->first()->matrixMapping->column;
+                foreach ($columnItems->groupBy(fn ($item) => $item->schedule_pattern ?: $this->patterns->detect($item->allocation_text)) as $pattern => $items) {
+                    $slots = $this->patterns->slots($pattern, $allSemesterWeeks);
+                    if ($slots->isEmpty()) {
+                        continue;
+                    }
+                    $this->distribute($plan, $column, $items->values(), $slots);
                 }
             }
 
             $this->refreshCoverage($plan);
             $plan->update(['status' => 'draft', 'validated_at' => null]);
+            $plan->unsetRelation('items');
+            $this->matrix->ensureMonthFocuses($plan->fresh(['items.matrixColumn', 'academicYear.weeks']));
 
             return $plan->fresh(['items', 'level', 'academicYear.weeks']);
         });
+    }
+
+    private function distribute(RppPlan $plan, $column, $items, $slots): void
+    {
+        $assignments = collect();
+        $itemCount = $items->count();
+        $slotCount = $slots->count();
+        if ($itemCount <= $slotCount) {
+            foreach ($slots as $index => $week) {
+                $item = $items[min($itemCount - 1, (int) floor(($index * $itemCount) / $slotCount))];
+                $assignments->push(compact('week', 'item'));
+            }
+        } else {
+            foreach ($items as $index => $item) {
+                $week = $slots[min($slotCount - 1, (int) floor(($index * $slotCount) / $itemCount))];
+                $assignments->push(compact('week', 'item'));
+            }
+        }
+
+        foreach ($assignments->groupBy(fn ($assignment) => $assignment['item']->id) as $syllabusId => $itemAssignments) {
+            $item = $itemAssignments->first()['item'];
+            $locked = $plan->items->where('syllabus_item_id', $syllabusId)->where('is_locked', true)->values();
+            $remaining = $itemAssignments->values();
+            foreach ($locked as $anchor) {
+                $exact = $remaining->search(fn ($assignment) => (int) $assignment['week']->id === (int) $anchor->calendar_week_id);
+                if ($exact !== false) {
+                    $remaining->forget($exact);
+                } elseif ($remaining->isNotEmpty()) {
+                    $closest = $remaining->sortBy(fn ($assignment) => abs($assignment['week']->week_number - $anchor->week->week_number))->keys()->first();
+                    $remaining->forget($closest);
+                }
+            }
+            $remaining = $remaining->values();
+            foreach ($remaining as $occurrence => $assignment) {
+                $existingLocked = RppWeekItem::query()
+                    ->where('rpp_plan_id', $plan->id)->where('calendar_week_id', $assignment['week']->id)
+                    ->where('syllabus_item_id', $item->id)->where('is_locked', true)->exists();
+                if ($existingLocked) {
+                    continue;
+                }
+                RppWeekItem::query()->updateOrCreate(
+                    [
+                        'rpp_plan_id' => $plan->id,
+                        'calendar_week_id' => $assignment['week']->id,
+                        'syllabus_item_id' => $item->id,
+                    ],
+                    [
+                        'rpp_matrix_column_id' => $column->id,
+                        'strand' => $column->label,
+                        'content' => $this->occurrenceContent($item, $occurrence, $remaining->count()),
+                        'source' => 'auto', 'is_locked' => false, 'position' => $occurrence + 1,
+                    ]
+                );
+            }
+        }
+    }
+
+    private function occurrenceContent(SyllabusItem $item, int $index, int $total): string
+    {
+        $segments = collect(preg_split('/\s*(?:;|\r?\n|,\s+)\s*/u', trim($item->title)))
+            ->map(fn ($part) => trim($part, " \t\n\r\0\x0B.•"))->filter(fn ($part) => mb_strlen($part) >= 3)->values();
+        if ($segments->count() <= 1) {
+            return $item->title;
+        }
+        if ($segments->count() <= $total) {
+            return $segments[min($segments->count() - 1, (int) floor(($index * $segments->count()) / max(1, $total)))];
+        }
+        $start = (int) floor(($index * $segments->count()) / max(1, $total));
+        $end = max($start + 1, (int) floor((($index + 1) * $segments->count()) / max(1, $total)));
+
+        return $segments->slice($start, $end - $start)->implode('; ');
     }
 
     public function generateAll(): void

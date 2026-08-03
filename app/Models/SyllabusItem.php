@@ -37,6 +37,23 @@ class SyllabusItem extends Model
         return $this->hasMany(RppProgressTarget::class);
     }
 
+    public function matrixMapping()
+    {
+        return $this->hasOne(RppMatrixMapping::class);
+    }
+
+    public function matrixColumn()
+    {
+        return $this->hasOneThrough(
+            RppMatrixColumn::class,
+            RppMatrixMapping::class,
+            'syllabus_item_id',
+            'id',
+            'id',
+            'rpp_matrix_column_id'
+        );
+    }
+
     public function editor()
     {
         return $this->belongsTo(User::class, 'last_edited_by');
