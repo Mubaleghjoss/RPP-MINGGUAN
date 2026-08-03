@@ -35,7 +35,7 @@
             <div class="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
                 <div>
                     <h2 id="planner-detail-title" class="text-lg font-semibold text-slate-950">{{ $detail === 'unplanned' ? 'Materi belum dijadwalkan' : 'Materi perlu alokasi' }}</h2>
-                    <p class="mt-1 text-sm text-slate-600">{{ $detail === 'unplanned' ? 'Materi beralokasi dapat dipilih dan dijadwalkan secara massal. Materi tanpa alokasi harus diperbaiki dahulu.' : 'Lengkapi alokasi dan jumlah pertemuan melalui editor Silabus sebelum menyusun ulang RPP.' }}</p>
+                    <p class="mt-1 text-sm text-slate-600">{{ $detail === 'unplanned' ? 'Jadwalkan satu materi secara otomatis, pilih minggu secara manual, atau gunakan pilihan massal. Keterangan Tentatif tidak menghalangi selama alokasi dan jumlah pertemuan tersedia.' : 'Lengkapi alokasi dan jumlah pertemuan melalui editor Silabus sebelum menyusun ulang RPP.' }}</p>
                 </div>
                 <button type="button" wire:click="closeDetail" class="button-secondary shrink-0">Tutup detail</button>
             </div>
@@ -43,7 +43,7 @@
             @if($detail === 'unplanned')
                 <div class="border-b border-slate-200 bg-slate-50 px-4 py-3">
                     <div class="flex flex-wrap items-center gap-2">
-                        <button type="button" wire:click="selectVisibleSyllabus(@js($detailItems->getCollection()->where('needs_allocation', false)->pluck('id')->values()->all()))" class="button-secondary">Pilih yang dapat dijadwalkan</button>
+                        <button type="button" wire:click="selectVisibleSyllabus(@js($detailItems->getCollection()->filter(fn ($item) => ! $item->needs_allocation && filled($item->allocation_text) && (int) $item->recommended_sessions >= 1)->pluck('id')->values()->all()))" class="button-secondary">Pilih yang dapat dijadwalkan</button>
                         <button type="button" wire:click="clearSyllabusSelection" class="button-secondary">Kosongkan pilihan</button>
                         <span class="status status-neutral"><span class="font-mono tabular-nums">{{ count($selectedSyllabus) }}</span>&nbsp;dipilih</span>
                     </div>
@@ -52,17 +52,58 @@
 
             <div class="divide-y divide-slate-100">
                 @forelse($detailItems as $item)
-                    <article class="grid gap-3 p-4 sm:grid-cols-[44px_minmax(0,1fr)_minmax(180px,280px)_auto] sm:items-center" wire:key="detail-syllabus-{{ $item->id }}">
+                    @php
+                        $canSchedule = $detail === 'unplanned' && ! $item->needs_allocation && filled($item->allocation_text) && (int) $item->recommended_sessions >= 1;
+                        $isTentative = str_contains(strtolower((string) $item->allocation_text), 'tentatif');
+                        $isManualOpen = (int) $manualSyllabusId === (int) $item->id;
+                    @endphp
+                    <article class="grid gap-3 p-4 sm:grid-cols-[44px_minmax(0,1fr)_minmax(180px,280px)_minmax(176px,auto)] sm:items-center" wire:key="detail-syllabus-{{ $item->id }}">
                         <div>
                             @if($detail === 'unplanned')
-                                <label class="flex size-11 items-center justify-center rounded-lg hover:bg-slate-100" title="{{ $item->needs_allocation ? 'Lengkapi alokasi sebelum menjadwalkan' : 'Pilih materi' }}">
-                                    <input wire:model.live="selectedSyllabus" type="checkbox" value="{{ $item->id }}" class="size-5 rounded border-slate-300 text-emerald-700" @disabled($item->needs_allocation) aria-label="Pilih {{ $item->title }}">
+                                <label class="flex size-11 items-center justify-center rounded-lg hover:bg-slate-100" title="{{ $canSchedule ? 'Pilih materi' : 'Lengkapi alokasi dan jumlah pertemuan sebelum menjadwalkan' }}">
+                                    <input wire:model.live="selectedSyllabus" type="checkbox" value="{{ $item->id }}" class="size-5 rounded border-slate-300 text-emerald-700" @disabled(! $canSchedule) aria-label="Pilih {{ $item->title }}">
                                 </label>
                             @endif
                         </div>
                         <div class="min-w-0"><p class="text-xs font-semibold uppercase tracking-wide text-slate-500">{{ $item->category }}</p><h3 class="mt-1 font-semibold text-pretty text-slate-950">{{ $item->title }}</h3><p class="mt-1 font-mono text-xs text-slate-500">{{ $item->stable_code }}</p></div>
-                        <div><p class="text-sm text-slate-700">{{ $item->allocation_text ?: 'Alokasi belum tersedia' }}</p><span class="status {{ $item->needs_allocation ? 'status-warning' : 'status-success' }} mt-2">{{ $item->needs_allocation ? 'Perlu Alokasi' : 'Siap Dijadwalkan' }}</span></div>
-                        <a href="{{ route('curriculum.edit', ['level' => $level, 'tab' => 'syllabus', 'search' => $item->stable_code] + ($item->needs_allocation ? ['filter' => 'allocation'] : [])) }}" class="button-secondary">Edit Silabus</a>
+                        <div>
+                            <p class="text-sm text-slate-700">{{ $item->allocation_text ?: 'Alokasi belum tersedia' }}</p>
+                            <span class="status {{ $canSchedule ? 'status-success' : 'status-warning' }} mt-2">{{ $canSchedule ? 'Siap Dijadwalkan' : 'Perlu Alokasi' }}</span>
+                            @if($isTentative && $canSchedule)<p class="mt-2 text-xs leading-5 text-slate-500">Tentatif adalah catatan waktu dari sumber dan tidak menghalangi penjadwalan.</p>@endif
+                        </div>
+                        <div class="flex flex-wrap gap-2 sm:justify-end">
+                            @if($canSchedule)
+                                <button type="button" wire:click="scheduleAutomatically({{ $item->id }})" wire:loading.attr="disabled" wire:target="scheduleAutomatically({{ $item->id }})" class="button-primary">
+                                    <span wire:loading.remove wire:target="scheduleAutomatically({{ $item->id }})">Jadwalkan Otomatis</span>
+                                    <span wire:loading wire:target="scheduleAutomatically({{ $item->id }})">Menjadwalkan...</span>
+                                </button>
+                                <button type="button" wire:click="{{ $isManualOpen ? 'closeManualScheduling' : 'openManualScheduling('.$item->id.')' }}" class="button-secondary" aria-expanded="{{ $isManualOpen ? 'true' : 'false' }}" aria-controls="manual-schedule-{{ $item->id }}">{{ $isManualOpen ? 'Tutup Pilihan' : 'Pilih Minggu' }}</button>
+                            @endif
+                            <a href="{{ route('curriculum.edit', ['level' => $level, 'tab' => 'syllabus', 'search' => $item->stable_code] + (! $canSchedule ? ['filter' => 'allocation'] : [])) }}" class="button-secondary">Edit Silabus</a>
+                        </div>
+                        @if($isManualOpen)
+                            <form id="manual-schedule-{{ $item->id }}" wire:submit="scheduleManual({{ $item->id }})" class="rounded-xl bg-slate-50 p-4 ring-1 ring-slate-200 sm:col-start-2 sm:col-span-3" aria-label="Pilih minggu untuk {{ $item->title }}">
+                                <div class="grid gap-3 lg:grid-cols-[minmax(220px,0.7fr)_minmax(280px,1fr)_auto] lg:items-end">
+                                    <label class="block text-sm font-medium text-slate-700">Minggu efektif
+                                        <select wire:model="manualWeekId" required class="mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3">
+                                            <option value="">Pilih minggu</option>
+                                            @foreach($weeks->where('is_effective', true) as $target)<option value="{{ $target->id }}">M{{ $target->week_number }} · {{ $target->starts_on->translatedFormat('d M Y') }}</option>@endforeach
+                                        </select>
+                                    </label>
+                                    <label class="block text-sm font-medium text-slate-700">Alasan penjadwalan
+                                        <input wire:model="manualReason" required minlength="5" maxlength="500" class="mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3" placeholder="Contoh: kegiatan dilaksanakan pada akhir pekan">
+                                        <span class="mt-1 block text-xs font-normal text-slate-500">Minimal 5 karakter; jadwal manual otomatis dikunci.</span>
+                                    </label>
+                                    <div class="flex flex-wrap gap-2">
+                                        <button type="submit" wire:loading.attr="disabled" wire:target="scheduleManual({{ $item->id }})" class="button-primary">
+                                            <span wire:loading.remove wire:target="scheduleManual({{ $item->id }})">Jadwalkan &amp; Kunci</span>
+                                            <span wire:loading wire:target="scheduleManual({{ $item->id }})">Menyimpan...</span>
+                                        </button>
+                                        <button type="button" wire:click="closeManualScheduling" class="button-secondary">Batal</button>
+                                    </div>
+                                </div>
+                            </form>
+                        @endif
                     </article>
                 @empty
                     <div class="p-8 text-center"><p class="font-semibold text-slate-900">Tidak ada materi pada kategori ini.</p><p class="mt-1 text-sm text-slate-500">Ringkasan sudah tidak memiliki temuan terbuka.</p></div>

@@ -55,11 +55,11 @@ class RppBulkActionService
         });
     }
 
-    public function scheduleUnplanned(RppPlan $plan, array $syllabusIds, ?int $weekId, string $reason, ?int $userId): int
+    public function scheduleUnplanned(RppPlan $plan, array $syllabusIds, ?int $weekId, string $reason, ?int $userId, string $activityAction = 'rpp.bulk_scheduled'): int
     {
         $ids = $this->validatedIds($syllabusIds, $reason);
 
-        return DB::transaction(function () use ($plan, $ids, $weekId, $reason, $userId) {
+        return DB::transaction(function () use ($plan, $ids, $weekId, $reason, $userId, $activityAction) {
             $lockedPlan = RppPlan::query()->lockForUpdate()->findOrFail($plan->id);
             $week = $this->effectiveWeek($lockedPlan, $weekId);
             $items = SyllabusItem::query()
@@ -73,6 +73,9 @@ class RppBulkActionService
 
             if ($items->count() !== count($ids)) {
                 throw ValidationException::withMessages(['selection' => 'Sebagian materi duplikat, perlu alokasi, sudah dijadwalkan, atau bukan milik jenjang ini. Tidak ada perubahan diterapkan.']);
+            }
+            if ($items->contains(fn (SyllabusItem $item) => blank($item->allocation_text) || (int) $item->recommended_sessions < 1)) {
+                throw ValidationException::withMessages(['selection' => 'Sebagian materi belum memiliki alokasi atau jumlah pertemuan minimal 1. Tidak ada perubahan diterapkan.']);
             }
 
             $position = (int) RppWeekItem::query()
@@ -95,7 +98,7 @@ class RppBulkActionService
                 ]);
             }
 
-            $this->finish($lockedPlan, $userId, 'rpp.bulk_scheduled', [
+            $this->finish($lockedPlan, $userId, $activityAction, [
                 'reason' => trim($reason),
                 'syllabus_item_ids' => $ids,
                 'calendar_week_id' => $week->id,

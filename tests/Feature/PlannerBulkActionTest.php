@@ -188,6 +188,122 @@ class PlannerBulkActionTest extends TestCase
         $this->assertDatabaseCount('activity_logs', 0);
     }
 
+    public function test_tentative_material_can_be_scheduled_automatically_without_moving_other_items(): void
+    {
+        $this->ready->update(['allocation_text' => 'Tentatif (Sabtu/Minggu)', 'recommended_sessions' => 1, 'needs_allocation' => false]);
+        $originalWeek = $this->placement->calendar_week_id;
+
+        Livewire::actingAs($this->admin)
+            ->withQueryParams(['detail' => 'unplanned'])
+            ->test(Planner::class, ['level' => $this->level])
+            ->assertSee('Tentatif adalah catatan waktu dari sumber dan tidak menghalangi penjadwalan.')
+            ->assertSee('Jadwalkan Otomatis')
+            ->call('scheduleAutomatically', $this->ready->id)
+            ->assertSet('errorMessage', '')
+            ->assertSee('Materi dijadwalkan otomatis ke Minggu 2')
+            ->assertDontSee('Tentatif adalah catatan waktu dari sumber dan tidak menghalangi penjadwalan.');
+
+        $created = RppWeekItem::query()
+            ->where('rpp_plan_id', $this->plan->id)
+            ->where('syllabus_item_id', $this->ready->id)
+            ->firstOrFail();
+
+        $this->assertSame($this->weekTwo->id, $created->calendar_week_id);
+        $this->assertSame('auto', $created->source);
+        $this->assertFalse($created->is_locked);
+        $this->assertSame($originalWeek, $this->placement->fresh()->calendar_week_id);
+        $this->assertSame('auto', $this->placement->fresh()->source);
+        $this->assertSame('draft', $this->plan->fresh()->status);
+        $this->assertNull($this->plan->fresh()->validated_at);
+        $this->assertEquals(66.67, $this->plan->fresh()->coverage_percent);
+        $this->assertDatabaseHas('activity_logs', ['action' => 'rpp.item_scheduled_auto']);
+    }
+
+    public function test_manual_inline_schedule_requires_effective_week_and_reason_then_locks_material(): void
+    {
+        Livewire::actingAs($this->admin)
+            ->withQueryParams(['detail' => 'unplanned'])
+            ->test(Planner::class, ['level' => $this->level])
+            ->call('openManualScheduling', $this->ready->id)
+            ->assertSet('manualSyllabusId', $this->ready->id)
+            ->assertSee('Jadwalkan &amp; Kunci', false)
+            ->set('manualWeekId', $this->weekTwo->id)
+            ->set('manualReason', 'Dijadwalkan sesuai hasil rapat')
+            ->call('scheduleManual', $this->ready->id)
+            ->assertSet('errorMessage', '')
+            ->assertSet('manualSyllabusId', null)
+            ->assertSet('manualWeekId', null)
+            ->assertSee('Materi dijadwalkan manual ke Minggu 2 dan dikunci.');
+
+        $created = RppWeekItem::query()
+            ->where('rpp_plan_id', $this->plan->id)
+            ->where('syllabus_item_id', $this->ready->id)
+            ->firstOrFail();
+        $this->assertSame($this->weekTwo->id, $created->calendar_week_id);
+        $this->assertSame('manual', $created->source);
+        $this->assertTrue($created->is_locked);
+        $this->assertDatabaseHas('activity_logs', ['action' => 'rpp.item_scheduled_manual']);
+    }
+
+    public function test_manual_inline_schedule_rejects_short_reason_and_holiday_week(): void
+    {
+        Livewire::actingAs($this->admin)
+            ->test(Planner::class, ['level' => $this->level])
+            ->call('openManualScheduling', $this->ready->id)
+            ->set('manualWeekId', $this->weekTwo->id)
+            ->set('manualReason', 'x')
+            ->call('scheduleManual', $this->ready->id)
+            ->assertSet('errorMessage', 'Alasan tindakan minimal 5 karakter.');
+
+        Livewire::actingAs($this->admin)
+            ->test(Planner::class, ['level' => $this->level])
+            ->call('openManualScheduling', $this->ready->id)
+            ->set('manualWeekId', $this->holiday->id)
+            ->set('manualReason', 'Mencoba minggu libur')
+            ->call('scheduleManual', $this->ready->id)
+            ->assertSet('errorMessage', 'Minggu tujuan tidak efektif atau bukan bagian dari tahun ajaran ini.');
+
+        $this->assertDatabaseMissing('rpp_week_items', [
+            'rpp_plan_id' => $this->plan->id,
+            'syllabus_item_id' => $this->ready->id,
+        ]);
+    }
+
+    public function test_automatic_single_schedule_rejects_ineligible_foreign_and_already_scheduled_materials(): void
+    {
+        $component = Livewire::actingAs($this->admin)->test(Planner::class, ['level' => $this->level]);
+
+        $component->call('scheduleAutomatically', $this->needsAllocation->id)
+            ->assertSet('errorMessage', 'Lengkapi alokasi dan jumlah pertemuan minimal 1 sebelum menjadwalkan materi.');
+        $component->call('scheduleAutomatically', $this->foreignPlacement->syllabus_item_id)
+            ->assertSet('errorMessage', 'Materi bukan milik jenjang RPP ini.');
+        $component->call('scheduleAutomatically', $this->scheduled->id)
+            ->assertSet('errorMessage', 'Materi ini sudah dijadwalkan. Muat ulang halaman untuk melihat jadwal terbaru.');
+
+        $duplicate = $this->level->syllabusItems()->where('is_duplicate', true)->firstOrFail();
+        $component->call('scheduleAutomatically', $duplicate->id)
+            ->assertSet('errorMessage', 'Materi duplikat tidak dapat dijadwalkan.');
+
+        $this->assertDatabaseMissing('rpp_week_items', [
+            'rpp_plan_id' => $this->plan->id,
+            'syllabus_item_id' => $this->ready->id,
+        ]);
+    }
+
+    public function test_automatic_single_schedule_rejects_when_no_effective_week_exists(): void
+    {
+        CalendarWeek::query()->where('academic_year_id', $this->plan->academic_year_id)->update(['is_effective' => false, 'type' => 'holiday']);
+
+        Livewire::actingAs($this->admin)->test(Planner::class, ['level' => $this->level])
+            ->call('scheduleAutomatically', $this->ready->id)
+            ->assertSet('errorMessage', 'Tidak ada minggu efektif yang tersedia pada tahun ajaran ini.');
+
+        $this->assertDatabaseMissing('rpp_week_items', [
+            'rpp_plan_id' => $this->plan->id,
+            'syllabus_item_id' => $this->ready->id,
+        ]);
+    }
+
     private function week(AcademicYear $year, int $number, bool $effective): CalendarWeek
     {
         return CalendarWeek::query()->create([

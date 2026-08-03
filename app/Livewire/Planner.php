@@ -44,6 +44,12 @@ class Planner extends Component
 
     public ?int $bulkWeekId = null;
 
+    public ?int $manualSyllabusId = null;
+
+    public ?int $manualWeekId = null;
+
+    public string $manualReason = '';
+
     public function mount(Level $level): void
     {
         $this->level = $level;
@@ -131,6 +137,54 @@ class Planner extends Component
         });
     }
 
+    public function scheduleAutomatically(int $syllabusItemId, RppPlanner $planner): void
+    {
+        $this->runBulk(function () use ($syllabusItemId, $planner) {
+            $placement = $planner->scheduleOne($this->plan, $syllabusItemId, Auth::id());
+            $this->afterScheduling("Materi dijadwalkan otomatis ke Minggu {$placement->week->week_number}. Materi lain tidak dipindahkan.");
+        });
+    }
+
+    public function openManualScheduling(int $syllabusItemId): void
+    {
+        $this->errorMessage = '';
+        $item = $this->unplannedQuery()->find($syllabusItemId);
+        if (! $item || $item->needs_allocation || blank($item->allocation_text) || (int) $item->recommended_sessions < 1) {
+            $this->errorMessage = 'Materi belum siap dijadwalkan. Lengkapi alokasi dan jumlah pertemuan minimal 1.';
+
+            return;
+        }
+
+        $this->manualSyllabusId = $item->id;
+        $this->manualWeekId = null;
+        $this->manualReason = '';
+    }
+
+    public function closeManualScheduling(): void
+    {
+        $this->resetManualScheduling();
+    }
+
+    public function scheduleManual(int $syllabusItemId, RppBulkActionService $bulk): void
+    {
+        $this->runBulk(function () use ($syllabusItemId, $bulk) {
+            if ((int) $this->manualSyllabusId !== $syllabusItemId) {
+                throw ValidationException::withMessages(['material' => 'Form penjadwalan tidak lagi sesuai dengan materi. Buka kembali pilihan minggu.']);
+            }
+            $week = $this->plan->academicYear->weeks()->where('is_effective', true)->find($this->manualWeekId);
+            $bulk->scheduleUnplanned(
+                $this->plan,
+                [$syllabusItemId],
+                $this->manualWeekId,
+                $this->manualReason,
+                Auth::id(),
+                'rpp.item_scheduled_manual'
+            );
+            $weekLabel = $week ? "Minggu {$week->week_number}" : 'minggu pilihan';
+            $this->afterScheduling("Materi dijadwalkan manual ke {$weekLabel} dan dikunci.");
+        });
+    }
+
     public function selectAllPlacements(): void
     {
         $this->selectedPlacements = $this->plan->items()->orderBy('id')->pluck('id')->map(fn ($id) => (string) $id)->all();
@@ -138,7 +192,13 @@ class Planner extends Component
 
     public function selectVisibleSyllabus(array $ids): void
     {
-        $allowed = $this->unplannedQuery()->where('needs_allocation', false)->whereIn('id', $ids)->pluck('id');
+        $allowed = $this->unplannedQuery()
+            ->where('needs_allocation', false)
+            ->whereNotNull('allocation_text')
+            ->where('allocation_text', '<>', '')
+            ->where('recommended_sessions', '>=', 1)
+            ->whereIn('id', $ids)
+            ->pluck('id');
         $this->selectedSyllabus = collect($this->selectedSyllabus)->merge($allowed)->map(fn ($id) => (string) $id)->unique()->values()->all();
     }
 
@@ -156,12 +216,14 @@ class Planner extends Component
     {
         $this->detail = '';
         $this->selectedSyllabus = [];
+        $this->resetManualScheduling();
         $this->resetPage('detailPage');
     }
 
     public function updatedDetail(): void
     {
         $this->selectedSyllabus = [];
+        $this->resetManualScheduling();
         $this->resetPage('detailPage');
     }
 
@@ -211,10 +273,10 @@ class Planner extends Component
         try {
             $callback();
         } catch (ValidationException $exception) {
-            $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Data bulk tidak valid.';
+            $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Tindakan tidak valid.';
         } catch (Throwable $exception) {
             report($exception);
-            $this->errorMessage = 'Bulk action gagal. Tidak ada perubahan yang diterapkan.';
+            $this->errorMessage = 'Tindakan gagal. Tidak ada perubahan yang diterapkan.';
         }
     }
 
@@ -224,5 +286,20 @@ class Planner extends Component
         $this->bulkReason = '';
         $this->bulkWeekId = null;
         $this->notice = $notice;
+    }
+
+    private function afterScheduling(string $notice): void
+    {
+        $this->afterBulk($notice);
+        $this->selectedSyllabus = [];
+        $this->resetManualScheduling();
+        $this->resetPage('detailPage');
+    }
+
+    private function resetManualScheduling(): void
+    {
+        $this->manualSyllabusId = null;
+        $this->manualWeekId = null;
+        $this->manualReason = '';
     }
 }
