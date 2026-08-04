@@ -20,4 +20,4 @@ Artisan::command('rpp:export {level : Kode jenjang, contoh PAUD} {semester : 1 a
     $destination = $this->argument('destination');
     $path = app(CurriculumWorkbookExporter::class)->exportLevelSemester($level, $semester, $destination ?: null);
     $this->info('Workbook dibuat: '.$path);
-})->purpose('Membuat workbook dua sheet untuk satu jenjang dan semester');
+})->purpose('Membuat workbook tiga sheet untuk satu jenjang dan semester');

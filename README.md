@@ -15,6 +15,8 @@ Aplikasi Laravel 12 untuk menjaga alur **GGB → Silabus → RPP global mingguan
 - Setiap sel minggu efektif menyediakan pemilih materi GGB/Silabus. Materi yang sudah terpasang dapat dipilih kembali sebagai penguatan manual terkunci.
 - Cakupan GGB dihitung untuk satu tahun ajaran. Daftar rinci pada `/ekspor?detail=ggb` mendukung konfirmasi semester/kolom, bulk **Lengkapi GGB 1 Tahun**, dan validasi tahunan 100%.
 - Kalender berbasis rentang tanggal mendukung Libur, Hari Raya, Evaluasi, dan Ujian untuk semua atau jenjang terpilih. Keterangan dan dampaknya sama pada planner, preview, serta Excel.
+- Normalisasi GGB membedakan **Materi**, **Subjudul**, dan **Artefak Sumber**. Hanya materi sebenarnya yang masuk cakupan, pemilih RPP, dan kamus Excel.
+- Indikator **Kelengkapan Matriks** memeriksa seluruh `minggu efektif × kolom aktif`. Bank Kegiatan, penguatan otomatis, dan isian manual satu kali mencegah sel materi kosong.
 
 ## Data sumber dan file lokal
 
@@ -57,7 +59,7 @@ Tidak ada registrasi publik. Ganti password contoh sebelum seed; seed production
 
 Pilih **Master Kurikulum → Edit Tabel** pada salah satu jenjang. Tab yang tersedia:
 
-- GGB: aspek, subaspek, materi, target, dan urutan.
+- GGB: aspek, subaspek, materi, target, Peran RPP, dan urutan.
 - Silabus: kategori, materi, penjabaran, alokasi, pertemuan, referensi, penilaian, duplikat, dan urutan.
 - Relasi: pasangan GGB–silabus, status, dan catatan.
 - RPP Mingguan: semester, minggu efektif, aspek, isi, rentang progres, posisi, dan kunci.
@@ -74,6 +76,8 @@ Buka `/ekspor`, pilih jenjang dan Semester 1/2, lalu gunakan:
 - **Atur Kolom** untuk mengubah aspek, subaspek, label, urutan, lebar, serta pemetaan Silabus.
 - **Atur Target** untuk membagi progres halaman/ayat secara berurutan.
 - **Atur Waktu** untuk menentukan tanggal awal-akhir semester serta rentang libur/evaluasi/ujian.
+- **Atur Kegiatan** untuk mengelola kegiatan reusable, semester, urutan, status aktif, dan rotasinya.
+- **Kelengkapan Matriks** untuk membuka daftar sel kosong dan mengisinya langsung.
 - Klik sebuah materi untuk mengedit minggu, kolom, isi, progres, dan kunci melalui drawer.
 
 Preview desktop memakai matriks bertingkat; ponsel memakai kartu per minggu. Jumlah minggu mengikuti rentang tanggal semester yang disimpan Admin, lalu dibagi menjadi dua blok triwulan. Rentang kegiatan yang menyentuh sebagian pekan membuat seluruh pekan non-efektif dan keterangannya ikut masuk Excel. Dari terminal:
@@ -84,7 +88,15 @@ php artisan rpp:export PAUD 1 "E:\xampp\htdocs\rpp-ppg\output\RPP_2026-2027_PAUD
 
 Target awal Tilawati PAUD adalah halaman 1–22 pada Semester 1 dan 23–44 pada Semester 2. Admin dapat mengubah target halaman, ayat, surat, bab, atau label khusus melalui preview. Rentang halaman selalu ditulis sebagai teks agar Excel tidak mengubahnya menjadi tanggal.
 
-Angka **Pertemuan** pada Silabus dibaca sebagai intensitas per minggu, bukan durasi minggu. Pola seperti setiap minggu, minggu ke-1/3, atau minggu ke-2/4 dapat diubah melalui editor Silabus. Materi tentatif tetap tersedia untuk penjadwalan manual dan tidak diulang otomatis.
+Angka **Pertemuan** pada Silabus dibaca sebagai intensitas per minggu, bukan durasi minggu. Pola seperti setiap minggu, minggu ke-1/3, atau minggu ke-2/4 dapat diubah melalui editor Silabus. Materi tentatif tetap tersedia untuk penjadwalan manual. Daftar kegiatan yang dapat dikenali, seperti Senam Barokah, Persinas ASAD, Pramuka, Futsal, dan Badminton, dibentuk menjadi Bank Kegiatan dan dapat dirotasi otomatis; kata `dll` tidak dibuat sebagai kegiatan.
+
+Untuk mengaudit ulang klasifikasi dan menyusun matriks setelah upgrade, gunakan:
+
+```powershell
+php artisan rpp:normalize-materials --level=PAUD --generate
+```
+
+Hilangkan `--level=PAUD` untuk memproses seluruh 17 jenjang. Perintah menampilkan jumlah Materi/Subjudul/Artefak, Bank Kegiatan, dan kelengkapan matriks per semester.
 
 Materi GGB general tidak ditebak semesternya. Admin memilih Semester 1 atau 2 dari daftar Cakupan GGB. Materi yang sudah jelas dapat dimasukkan lebih dahulu; materi ambigu tetap berada pada antrean **Perlu Konfirmasi Admin**.
 

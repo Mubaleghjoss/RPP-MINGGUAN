@@ -275,7 +275,7 @@ class Planner extends Component
         $weeks = $calendar->weeksForPlan($this->plan);
         $itemsByWeek = $this->plan->items->sortBy(['strand', 'position'])->groupBy('calendar_week_id');
         $unplanned = $this->unplannedQuery()->count();
-        $needsAllocation = $this->level->syllabusItems()->where('is_duplicate', false)->whereIn('semester_scope', [(string) $this->plan->semester, 'both'])->where('needs_allocation', true)->count();
+        $needsAllocation = $this->level->syllabusItems()->where('is_duplicate', false)->where('is_source_artifact', false)->whereIn('semester_scope', [(string) $this->plan->semester, 'both'])->where('needs_allocation', true)->count();
         $detailItems = $this->detailItems();
 
         return view('livewire.planner', compact('weeks', 'itemsByWeek', 'unplanned', 'needsAllocation', 'detailItems'));
@@ -296,6 +296,7 @@ class Planner extends Component
     {
         return $this->level->syllabusItems()
             ->where('is_duplicate', false)
+            ->where('is_source_artifact', false)
             ->whereIn('semester_scope', [(string) $this->plan->semester, 'both'])
             ->whereDoesntHave('placements', fn ($query) => $query->where('rpp_plan_id', $this->plan->id));
     }
@@ -304,7 +305,7 @@ class Planner extends Component
     {
         return match ($this->detail) {
             'unplanned' => $this->unplannedQuery()->orderBy('sort_order')->paginate(25, ['*'], 'detailPage'),
-            'allocation' => $this->level->syllabusItems()->where('is_duplicate', false)->whereIn('semester_scope', [(string) $this->plan->semester, 'both'])->where('needs_allocation', true)->orderBy('sort_order')->paginate(25, ['*'], 'detailPage'),
+            'allocation' => $this->level->syllabusItems()->where('is_duplicate', false)->where('is_source_artifact', false)->whereIn('semester_scope', [(string) $this->plan->semester, 'both'])->where('needs_allocation', true)->orderBy('sort_order')->paginate(25, ['*'], 'detailPage'),
             default => null,
         };
     }

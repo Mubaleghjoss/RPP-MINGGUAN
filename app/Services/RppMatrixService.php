@@ -104,7 +104,14 @@ class RppMatrixService
         foreach ($ggbItems as $ggb) {
             $lines[] = 'GGB: '.$ggb->stable_code.' — '.$ggb->title.' (hlm. '.$ggb->source_page.')';
         }
-        $lines[] = 'Status: '.($item->source === 'manual' ? 'Manual terkunci' : 'Otomatis')
+        $status = match ($item->source) {
+            'manual' => 'Manual terkunci',
+            'reinforcement_auto' => 'Penguatan otomatis',
+            'activity_auto' => 'Rotasi kegiatan',
+            'ggb_auto' => 'Materi GGB otomatis',
+            default => 'Materi baru otomatis',
+        };
+        $lines[] = 'Status: '.$status
             .($item->progress_kind === 'penguatan' ? ' · Penguatan' : '');
 
         return implode("\n", $lines);

@@ -9,7 +9,13 @@ class RppMaterialCatalogItem extends Model
 {
     protected $guarded = [];
 
-    protected $casts = ['semester_confirmed' => 'boolean', 'auto_include' => 'boolean'];
+    protected $casts = [
+        'semester_confirmed' => 'boolean',
+        'auto_include' => 'boolean',
+        'is_schedulable' => 'boolean',
+        'is_active' => 'boolean',
+        'rotation_enabled' => 'boolean',
+    ];
 
     public function scopeNeedsRppColumnConfirmation(Builder $query): Builder
     {

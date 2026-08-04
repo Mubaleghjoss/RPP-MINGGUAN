@@ -26,14 +26,14 @@ use RuntimeException;
 class CurriculumRevisionService
 {
     private const EDITABLE = [
-        'ggb' => ['aspect', 'subaspect', 'title', 'target_text', 'sort_order'],
+        'ggb' => ['aspect', 'subaspect', 'title', 'target_text', 'rpp_role', 'sort_order'],
         'syllabus' => ['category', 'title', 'description', 'allocation_text', 'recommended_sessions', 'schedule_pattern', 'reference_text', 'assessment_text', 'is_duplicate', 'semester_scope', 'sort_order'],
         'link' => ['status', 'notes'],
         'rpp' => ['calendar_week_id', 'rpp_matrix_column_id', 'strand', 'content', 'progress_start', 'progress_end', 'progress_kind', 'position', 'is_locked'],
         'progress_target' => ['unit_label', 'range_start', 'range_end', 'strategy'],
         'matrix_column' => ['aspect_label', 'subaspect_label', 'label', 'sort_order', 'width', 'is_active'],
         'matrix_mapping' => ['rpp_matrix_column_id'],
-        'material_catalog' => ['rpp_matrix_column_id'],
+        'material_catalog' => ['rpp_matrix_column_id', 'title', 'semester_scope', 'sort_order', 'is_active', 'rotation_enabled'],
         'month_focus' => ['focus_text', 'is_locked'],
     ];
 
@@ -53,6 +53,7 @@ class CurriculumRevisionService
             ]);
             $levels = [];
             $progressTargets = [];
+            $outlineLevels = [];
 
             foreach ($patches as $index => $patch) {
                 $domain = (string) ($patch['domain'] ?? '');
@@ -81,6 +82,10 @@ class CurriculumRevisionService
                 if ($domain === 'syllabus' && array_key_exists('schedule_pattern', $changes)) {
                     $changes['schedule_pattern_source'] = 'manual';
                 }
+                if ($domain === 'ggb' && array_key_exists('rpp_role', $changes)) {
+                    $changes['rpp_role_source'] = 'manual';
+                    $outlineLevels[(int) $model->level_id] = true;
+                }
                 if ($domain === 'rpp' && array_intersect(array_keys($changes), ['calendar_week_id', 'rpp_matrix_column_id', 'strand', 'content', 'progress_start', 'progress_end', 'progress_kind', 'position'])) {
                     $changes['source'] = 'manual';
                     $changes['is_locked'] = true;
@@ -104,6 +109,11 @@ class CurriculumRevisionService
                 }
                 if ($domain === 'matrix_column' && array_key_exists('label', $changes)) {
                     RppWeekItem::query()->where('rpp_matrix_column_id', $model->id)->update(['strand' => $model->label]);
+                }
+                if ($domain === 'material_catalog' && $model->source_kind === 'activity' && array_key_exists('title', $changes)) {
+                    RppWeekItem::query()->whereHas('materials', fn ($query) => $query->whereKey($model->id))
+                        ->where('source', 'activity_auto')->where('is_locked', false)
+                        ->update(['content' => $model->title]);
                 }
                 if ($domain === 'rpp' && $model->rpp_progress_target_id) {
                     $progressTargets[(int) $model->rpp_progress_target_id] = true;
@@ -130,6 +140,9 @@ class CurriculumRevisionService
             }
 
             $this->markPlansDraft(array_keys($levels));
+            foreach (array_keys($outlineLevels) as $levelId) {
+                app(RppMaterialCatalogService::class)->syncLevel(Level::query()->findOrFail($levelId));
+            }
             $batch->update(['item_count' => $batch->items()->count()]);
             $this->activity($user, 'curriculum.batch_saved', ['batch_uuid' => $batch->uuid, 'items' => $batch->item_count]);
 
@@ -345,6 +358,8 @@ class CurriculumRevisionService
             'aspect_label' => ['required', 'string', 'max:255'], 'subaspect_label' => ['nullable', 'string', 'max:255'],
             'label' => ['required', 'string', 'max:255'], 'width' => ['required', 'integer', 'min:12', 'max:60'],
             'is_active' => ['boolean'], 'focus_text' => ['nullable', 'string', 'max:500'],
+            'rotation_enabled' => ['boolean'],
+            'rpp_role' => ['required', 'in:material,heading,artifact'],
         ];
         $normalized = [];
         foreach ($changes as $field => $value) {
@@ -352,7 +367,7 @@ class CurriculumRevisionService
                 $nullableNumber = in_array($field, ['recommended_sessions', 'progress_start', 'progress_end'], true);
                 $value = blank($value) && $nullableNumber ? null : (int) $value;
             }
-            if (in_array($field, ['is_duplicate', 'is_locked', 'is_active'], true)) {
+            if (in_array($field, ['is_duplicate', 'is_locked', 'is_active', 'rotation_enabled'], true)) {
                 $value = filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? (bool) $value;
             }
             if (is_string($value)) {
@@ -392,6 +407,13 @@ class CurriculumRevisionService
                 throw ValidationException::withMessages(['grid' => 'Materi katalog hanya dapat dipetakan ke kolom aktif pada jenjang yang sama.']);
             }
             $normalized['mapping_status'] = 'mapped';
+        }
+        if ($domain === 'material_catalog') {
+            $catalog = $model instanceof RppMaterialCatalogItem ? $model : throw new RuntimeException('Katalog materi tidak valid.');
+            $activityOnly = array_diff(array_keys($normalized), ['rpp_matrix_column_id']);
+            if ($activityOnly !== [] && $catalog->source_kind !== 'activity') {
+                throw ValidationException::withMessages(['grid' => 'Judul, semester, urutan, dan rotasi hanya dapat diubah untuk Bank Kegiatan.']);
+            }
         }
         if ($domain === 'matrix_column' && (($normalized['is_active'] ?? true) === false) && $model->mappings()->exists()) {
             throw ValidationException::withMessages(['grid' => 'Kolom yang masih memiliki materi tidak dapat dinonaktifkan. Pindahkan pemetaannya terlebih dahulu.']);

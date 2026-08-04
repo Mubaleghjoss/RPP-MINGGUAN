@@ -1,6 +1,5 @@
 <?php
 
-use App\Services\RppMaterialCatalogService;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
@@ -62,9 +61,8 @@ return new class extends Migration
             );
         });
 
-        if (Schema::hasTable('levels') && DB::table('levels')->exists()) {
-            app(RppMaterialCatalogService::class)->syncAll();
-        }
+        // Sinkronisasi katalog dijalankan setelah seluruh kolom katalog tersedia
+        // pada migrasi normalisasi terbaru.
     }
 
     public function down(): void

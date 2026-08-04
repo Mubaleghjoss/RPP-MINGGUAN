@@ -17,6 +17,7 @@ class RppProgressService
     {
         $items = $plan->level->syllabusItems()
             ->where('is_duplicate', false)
+            ->where('is_source_artifact', false)
             ->whereIn('semester_scope', [(string) $plan->semester, 'both'])
             ->where(fn ($query) => $query->where('category', 'like', '%Tilawati%')->orWhere('title', 'like', 'Tilawati%'))
             ->get();

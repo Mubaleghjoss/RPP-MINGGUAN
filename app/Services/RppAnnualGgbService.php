@@ -28,6 +28,7 @@ class RppAnnualGgbService
     {
         $materials = $level->materialCatalogItems()
             ->where('source_kind', 'ggb')
+            ->where('is_schedulable', true)->where('is_active', true)
             ->where('source_semester_scope', 'general')
             ->with('matrixColumn')
             ->get();
@@ -73,6 +74,7 @@ class RppAnnualGgbService
         return DB::transaction(function () use ($level, $reason, $confirmSuggestedMappings, $userId) {
             $materials = $level->materialCatalogItems()
                 ->where('source_kind', 'ggb')
+                ->where('is_schedulable', true)->where('is_active', true)
                 ->where('source_semester_scope', 'general')
                 ->with('matrixColumn')
                 ->lockForUpdate()
@@ -183,6 +185,7 @@ class RppAnnualGgbService
 
         return DB::transaction(function () use ($level, $ids, $semester, $columnId, $reason, $userId) {
             $materials = RppMaterialCatalogItem::query()->where('level_id', $level->id)->where('source_kind', 'ggb')
+                ->where('is_schedulable', true)->where('is_active', true)
                 ->whereIn('id', collect($ids)->map(fn ($id) => (int) $id)->unique())->lockForUpdate()->get();
             if ($materials->count() !== collect($ids)->unique()->count()) {
                 throw ValidationException::withMessages(['selection' => 'Sebagian materi bukan milik jenjang aktif.']);
@@ -233,6 +236,7 @@ class RppAnnualGgbService
             $this->presets->syncLevel($level);
             $this->catalog->syncLevel($level);
             $ready = $level->materialCatalogItems()->where('source_kind', 'ggb')
+                ->where('is_schedulable', true)->where('is_active', true)
                 ->where('mapping_status', 'mapped')->whereNotNull('rpp_matrix_column_id')
                 ->whereIn('semester_scope', ['1', '2'])
                 ->where(fn ($query) => $query->where('source_semester_scope', '!=', 'general')->orWhere('semester_confirmed', true))
@@ -260,6 +264,7 @@ class RppAnnualGgbService
     public function rebuildForPlan(RppPlan $plan, ?int $userId = null): int
     {
         $hasAutomaticGgb = RppMaterialCatalogItem::query()->where('level_id', $plan->level_id)->where('source_kind', 'ggb')
+            ->where('is_schedulable', true)->where('is_active', true)
             ->where('auto_include', true)->where('semester_scope', (string) $plan->semester)->exists();
         if (! $hasAutomaticGgb && ! $plan->items()->where('source', 'ggb_auto')->exists()) {
             return 0;
@@ -270,9 +275,11 @@ class RppAnnualGgbService
             return 0;
         }
         $coveredIds = RppMaterialCatalogItem::query()->where('level_id', $plan->level_id)->where('source_kind', 'ggb')
+            ->where('is_schedulable', true)->where('is_active', true)
             ->whereHas('placements.plan', fn ($query) => $query->where('academic_year_id', $plan->academic_year_id)->where('level_id', $plan->level_id))
             ->pluck('id');
         $materials = RppMaterialCatalogItem::query()->where('level_id', $plan->level_id)->where('source_kind', 'ggb')
+            ->where('is_schedulable', true)->where('is_active', true)
             ->where('auto_include', true)->where('mapping_status', 'mapped')->where('semester_confirmed', true)
             ->where('semester_scope', (string) $plan->semester)->whereNotNull('rpp_matrix_column_id')
             ->whereNotIn('id', $coveredIds)->with('matrixColumn')->orderBy('sort_order')->get();

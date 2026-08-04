@@ -6,6 +6,7 @@ use App\Models\Level;
 use App\Services\CurriculumWorkbookExporter;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 class ExportController extends Controller
@@ -19,7 +20,15 @@ class ExportController extends Controller
         }
 
         $level = Level::query()->findOrFail($levelId);
-        $path = $exporter->exportLevelSemester($level, $semester);
+        try {
+            $path = $exporter->exportLevelSemester($level, $semester);
+        } catch (ValidationException $exception) {
+            return redirect()->route('exports.index', [
+                'level' => $level->id,
+                'semester' => $semester,
+                'detail' => 'gaps',
+            ])->with('error', collect($exception->errors())->flatten()->first());
+        }
         $year = str_replace('/', '-', $exporter->activeYearLabel());
         $code = str_replace([' ', '/'], '_', $level->code);
 

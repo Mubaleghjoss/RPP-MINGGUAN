@@ -4,6 +4,8 @@ namespace App\Services;
 
 use App\Models\GgbItem;
 use App\Models\Level;
+use App\Models\RevisionBatch;
+use App\Models\RevisionItem;
 use App\Models\RppMaterialCatalogItem;
 use App\Models\RppPlan;
 use App\Models\RppWeekItem;
@@ -11,7 +13,9 @@ use App\Models\SyllabusItem;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 
 class RppMaterialCatalogService
 {
@@ -21,7 +25,10 @@ class RppMaterialCatalogService
 
     private array $usedCodes = [];
 
-    public function __construct(private readonly RppMatrixPresetService $presets) {}
+    public function __construct(
+        private readonly RppMatrixPresetService $presets,
+        private readonly GgbOutlineService $outline,
+    ) {}
 
     public function syncAll(): void
     {
@@ -31,15 +38,14 @@ class RppMaterialCatalogService
     public function syncLevel(Level $level): void
     {
         DB::transaction(function () use ($level) {
+            $this->outline->classifyLevel($level);
             $this->presets->syncLevel($level);
             $this->usedCodes[$level->id] = RppMaterialCatalogItem::query()->where('level_id', $level->id)
                 ->pluck('display_code')->flip()->all();
             $columns = $level->matrixColumns()->where('is_active', true)->orderBy('sort_order')->get();
             $allGgb = $level->ggbItems()->with(['syllabusItems.matrixMapping.column'])->orderBy('sort_order')->get();
             $byId = $allGgb->keyBy('id');
-            $parentIds = $allGgb->pluck('parent_id')->filter()->mapWithKeys(fn ($id) => [(int) $id => true]);
-            $leaves = $allGgb->filter(fn (GgbItem $item) => ! in_array($item->kind, ['aspect', 'subaspect'], true)
-                && ! $parentIds->has($item->id));
+            $leaves = $allGgb->where('rpp_role', 'material');
             $existingGgb = RppMaterialCatalogItem::query()->where('level_id', $level->id)->whereNotNull('ggb_item_id')->get()->keyBy('ggb_item_id');
             $newGgb = [];
             $now = now();
@@ -56,12 +62,16 @@ class RppMaterialCatalogService
                         'ggb_item_id' => $leaf->id,
                         'syllabus_item_id' => null,
                         'source_kind' => 'ggb',
+                        'is_schedulable' => true,
                         'display_code' => $this->nextCode($level, $column?->label ?: $leaf->subaspect ?: 'Materi'),
                         'title' => $leaf->title,
                         'semester_scope' => $scope,
                         'source_semester_scope' => $sourceScope,
                         'semester_confirmed' => $sourceScope !== 'general',
                         'auto_include' => false,
+                        'is_active' => true,
+                        'rotation_enabled' => false,
+                        'origin_key' => null,
                         'mapping_status' => $status,
                         'sort_order' => $leaf->sort_order,
                         'lock_version' => 0,
@@ -76,6 +86,8 @@ class RppMaterialCatalogService
                     'title' => $leaf->title,
                     'sort_order' => $leaf->sort_order,
                     'source_semester_scope' => $sourceScope,
+                    'is_schedulable' => true,
+                    'is_active' => true,
                 ];
                 if ($sourceScope !== 'general' || ! $catalog->semester_confirmed) {
                     $changes['semester_scope'] = $scope;
@@ -90,6 +102,10 @@ class RppMaterialCatalogService
                 }
             }
             collect($newGgb)->chunk(500)->each(fn ($chunk) => DB::table('rpp_material_catalog_items')->insert($chunk->all()));
+            RppMaterialCatalogItem::query()->where('level_id', $level->id)->where('source_kind', 'ggb')
+                ->whereNotIn('ggb_item_id', $leaves->pluck('id'))
+                ->update(['is_schedulable' => false, 'auto_include' => false]);
+            $this->outline->removeInvalidPlacements($level);
 
             unset($this->catalogMaps[$level->id]);
             $catalogMap = $this->catalogMap($level->id);
@@ -98,7 +114,8 @@ class RppMaterialCatalogService
             $existingSyllabus = RppMaterialCatalogItem::query()->where('level_id', $level->id)->whereNotNull('syllabus_item_id')->get()->keyBy('syllabus_item_id');
             $newSyllabus = [];
             $supplementalSyllabusIds = [];
-            $level->syllabusItems()->where('is_duplicate', false)->with('matrixMapping.column')->orderBy('sort_order')->get()
+            $level->syllabusItems()->where('is_duplicate', false)->where('is_source_artifact', false)->with('matrixMapping.column')->orderBy('sort_order')->get()
+                ->reject(fn (SyllabusItem $syllabus) => $this->presets->isSourceArtifact($syllabus))
                 ->each(function (SyllabusItem $syllabus) use ($level, $catalogMap, $ggbCatalogIds, $existingSyllabus, &$newSyllabus, &$supplementalSyllabusIds, $now) {
                     $hasDetailedGgb = collect($catalogMap[$syllabus->id] ?? [])->contains(fn ($id) => isset($ggbCatalogIds[$id]));
                     if ($hasDetailedGgb) {
@@ -116,12 +133,16 @@ class RppMaterialCatalogService
                             'ggb_item_id' => null,
                             'syllabus_item_id' => $syllabus->id,
                             'source_kind' => 'syllabus',
+                            'is_schedulable' => true,
                             'display_code' => $this->nextCode($level, $column?->label ?: $syllabus->category ?: 'Materi'),
                             'title' => $syllabus->title,
                             'semester_scope' => $syllabus->semester_scope,
                             'source_semester_scope' => $sourceScope,
                             'semester_confirmed' => $sourceScope !== 'general',
                             'auto_include' => false,
+                            'is_active' => true,
+                            'rotation_enabled' => false,
+                            'origin_key' => null,
                             'mapping_status' => $column?->is_active ? 'mapped' : 'unmapped',
                             'sort_order' => 100000 + $syllabus->sort_order,
                             'lock_version' => 0,
@@ -135,6 +156,8 @@ class RppMaterialCatalogService
                     $changes = [
                         'title' => $syllabus->title,
                         'sort_order' => 100000 + $syllabus->sort_order,
+                        'is_schedulable' => true,
+                        'is_active' => true,
                     ];
                     $sourceScope = in_array((string) $syllabus->source_semester, ['1', '2'], true)
                         ? (string) $syllabus->source_semester : 'general';
@@ -155,10 +178,7 @@ class RppMaterialCatalogService
             RppMaterialCatalogItem::query()->where('level_id', $level->id)->where('source_kind', 'syllabus')
                 ->whereNotIn('syllabus_item_id', $supplementalSyllabusIds)->whereDoesntHave('placements')->delete();
 
-            $validGgbIds = $leaves->pluck('id');
-            RppMaterialCatalogItem::query()->where('level_id', $level->id)->where('source_kind', 'ggb')
-                ->whereNotIn('ggb_item_id', $validGgbIds)->whereDoesntHave('placements')->delete();
-
+            $this->syncActivities($level, $now);
             unset($this->catalogMaps[$level->id]);
             $this->backfillPlacements($level);
         });
@@ -181,6 +201,84 @@ class RppMaterialCatalogService
         if ($ids->isNotEmpty()) {
             $item->materials()->syncWithoutDetaching($ids->all());
         }
+    }
+
+    public function createActivity(
+        Level $level,
+        int $columnId,
+        string $title,
+        string $semesterScope,
+        bool $rotationEnabled,
+        string $reason,
+        ?int $userId,
+    ): RppMaterialCatalogItem {
+        Validator::make(compact('columnId', 'title', 'semesterScope', 'reason'), [
+            'columnId' => ['required', 'integer'],
+            'title' => ['required', 'string', 'min:3', 'max:500'],
+            'semesterScope' => ['required', 'in:1,2,both'],
+            'reason' => ['required', 'string', 'min:5', 'max:500'],
+        ], [
+            'title.required' => 'Nama kegiatan wajib diisi.',
+            'title.min' => 'Nama kegiatan minimal 3 karakter.',
+            'reason.required' => 'Alasan tindakan wajib diisi.',
+            'reason.min' => 'Alasan tindakan minimal 5 karakter.',
+        ])->validate();
+
+        return DB::transaction(function () use ($level, $columnId, $title, $semesterScope, $rotationEnabled, $reason, $userId) {
+            $column = $level->matrixColumns()->where('is_active', true)->lockForUpdate()->find($columnId);
+            if (! $column) {
+                throw ValidationException::withMessages([
+                    'activityColumnId' => 'Kolom RPP tidak aktif atau bukan milik jenjang ini.',
+                ]);
+            }
+            $this->usedCodes[$level->id] = RppMaterialCatalogItem::query()->where('level_id', $level->id)
+                ->pluck('display_code')->flip()->all();
+            $item = RppMaterialCatalogItem::query()->create([
+                'level_id' => $level->id,
+                'rpp_matrix_column_id' => $column->id,
+                'source_kind' => 'activity',
+                'is_schedulable' => true,
+                'display_code' => $this->nextCode($level, $column->label),
+                'title' => trim($title),
+                'semester_scope' => $semesterScope,
+                'source_semester_scope' => 'general',
+                'semester_confirmed' => true,
+                'auto_include' => false,
+                'is_active' => true,
+                'rotation_enabled' => $rotationEnabled,
+                'origin_key' => 'activity:manual:'.Str::uuid(),
+                'mapping_status' => 'mapped',
+                'sort_order' => 300000 + (int) RppMaterialCatalogItem::query()->where('level_id', $level->id)->where('source_kind', 'activity')->max('sort_order') % 100000 + 1,
+                'lock_version' => 1,
+                'last_edited_by' => $userId,
+            ]);
+            $batch = RevisionBatch::query()->create([
+                'uuid' => (string) Str::uuid(),
+                'user_id' => $userId,
+                'action' => 'create',
+                'reason' => trim($reason),
+                'item_count' => 1,
+            ]);
+            RevisionItem::query()->create([
+                'revision_batch_id' => $batch->id,
+                'revisable_type' => 'material_catalog',
+                'revisable_id' => $item->id,
+                'before_values' => [],
+                'after_values' => $item->only(['display_code', 'title', 'rpp_matrix_column_id', 'semester_scope', 'is_active', 'rotation_enabled']),
+                'before_lock_version' => 0,
+                'after_lock_version' => 1,
+            ]);
+            $level->plans()->update(['status' => 'draft', 'validated_at' => null]);
+            DB::table('activity_logs')->insert([
+                'user_id' => $userId,
+                'action' => 'rpp.activity_created',
+                'details' => json_encode(['level_id' => $level->id, 'catalog_item_id' => $item->id, 'reason' => trim($reason)], JSON_THROW_ON_ERROR),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            return $item;
+        });
     }
 
     public function placementLabel(RppWeekItem $item): string
@@ -250,7 +348,9 @@ class RppMaterialCatalogService
     {
         return RppMaterialCatalogItem::query()
             ->where('level_id', $plan->level_id)
-            ->where('source_kind', 'ggb');
+            ->where('source_kind', 'ggb')
+            ->where('is_schedulable', true)
+            ->where('is_active', true);
     }
 
     public function headerTree(Collection $columns): Collection
@@ -289,7 +389,7 @@ class RppMaterialCatalogService
             return $this->catalogMaps[$levelId];
         }
 
-        $catalog = RppMaterialCatalogItem::query()->where('level_id', $levelId)->get();
+        $catalog = RppMaterialCatalogItem::query()->where('level_id', $levelId)->where('is_schedulable', true)->get();
         $ggb = GgbItem::query()->where('level_id', $levelId)->get(['id', 'parent_id']);
         $parents = $ggb->pluck('parent_id', 'id');
         $ancestorCatalog = [];
@@ -302,7 +402,7 @@ class RppMaterialCatalogService
         }
 
         $map = [];
-        SyllabusItem::query()->where('level_id', $levelId)->where('is_duplicate', false)->with('ggbItems:id,parent_id')->get()
+        SyllabusItem::query()->where('level_id', $levelId)->where('is_duplicate', false)->where('is_source_artifact', false)->with('ggbItems:id,parent_id')->get()
             ->each(function (SyllabusItem $syllabus) use (&$map, $ancestorCatalog, $catalog) {
                 $ids = $syllabus->ggbItems->flatMap(fn ($item) => $ancestorCatalog[$item->id] ?? [])->unique()->values();
                 if ($ids->isEmpty()) {
@@ -317,7 +417,9 @@ class RppMaterialCatalogService
 
     private function columnForGgb(GgbItem $ggb, Collection $columns, Collection $byId): array
     {
-        $linked = $ggb->syllabusItems->filter(fn ($item) => ! $item->is_duplicate && $item->matrixMapping?->column?->is_active)
+        $linked = $ggb->syllabusItems->filter(fn ($item) => ! $item->is_duplicate
+            && ! $item->is_source_artifact
+            && $item->matrixMapping?->column?->is_active)
             ->sortBy(fn ($item) => sprintf('%d-%08.4f-%010d', match ($item->pivot->status) {
                 'sesuai' => 0, 'sebagian' => 1, default => 2,
             }, 1 - (float) $item->pivot->confidence, $item->sort_order));
@@ -391,6 +493,69 @@ class RppMaterialCatalogService
                 'updated_at' => $now,
             ]));
         $rows->chunk(1000)->each(fn ($chunk) => DB::table('rpp_week_item_materials')->insertOrIgnore($chunk->all()));
+    }
+
+    private function syncActivities(Level $level, $now): void
+    {
+        $items = $level->syllabusItems()->where('is_duplicate', false)->where('is_source_artifact', false)
+            ->where('schedule_pattern', 'tentative')
+            ->with('matrixMapping.column')
+            ->orderBy('sort_order')
+            ->get();
+
+        foreach ($items as $syllabus) {
+            $column = $syllabus->matrixMapping?->column;
+            if (! $column?->is_active) {
+                continue;
+            }
+            $segments = collect(preg_split('/\s*,\s*/u', (string) $syllabus->title))
+                ->map(fn ($value) => trim(preg_replace('/\b(?:dll|dan lain-lain)\.?\s*$/iu', '', (string) $value)))
+                ->filter(fn ($value) => mb_strlen($value) >= 3)
+                ->unique(fn ($value) => $this->normalize($value));
+            foreach ($segments as $position => $title) {
+                $origin = 'activity:auto:'.$column->stable_key.':'.sha1($this->normalize($title));
+                $activity = RppMaterialCatalogItem::query()->firstOrNew([
+                    'level_id' => $level->id,
+                    'origin_key' => $origin,
+                ]);
+                if (! $activity->exists) {
+                    $activity->forceFill([
+                        'rpp_matrix_column_id' => $column->id,
+                        'ggb_item_id' => null,
+                        'syllabus_item_id' => null,
+                        'source_kind' => 'activity',
+                        'is_schedulable' => true,
+                        'display_code' => $this->nextCode($level, $column->label),
+                        'title' => $title,
+                        'semester_scope' => $syllabus->semester_scope,
+                        'source_semester_scope' => 'both',
+                        'semester_confirmed' => true,
+                        'auto_include' => false,
+                        'is_active' => true,
+                        'rotation_enabled' => true,
+                        'mapping_status' => 'mapped',
+                        'sort_order' => 200000 + $column->sort_order * 100 + $position,
+                        'lock_version' => 0,
+                        'last_edited_by' => null,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ])->save();
+                } elseif (! $activity->last_edited_by) {
+                    $scope = $activity->semester_scope === $syllabus->semester_scope
+                        ? $activity->semester_scope
+                        : 'both';
+                    $activity->forceFill([
+                        'title' => $title,
+                        'rpp_matrix_column_id' => $column->id,
+                        'semester_scope' => $scope,
+                        'is_schedulable' => true,
+                        'is_active' => true,
+                        'rotation_enabled' => true,
+                        'mapping_status' => 'mapped',
+                    ])->save();
+                }
+            }
+        }
     }
 
     private function normalize(?string $value): string

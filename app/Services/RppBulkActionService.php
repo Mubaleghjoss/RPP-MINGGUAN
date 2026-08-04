@@ -73,6 +73,7 @@ class RppBulkActionService
                 ->where('level_id', $lockedPlan->level_id)
                 ->whereIn('id', $ids)
                 ->where('is_duplicate', false)
+                ->where('is_source_artifact', false)
                 ->where('needs_allocation', false)
                 ->whereIn('semester_scope', [(string) $lockedPlan->semester, 'both'])
                 ->whereDoesntHave('placements', fn ($query) => $query->where('rpp_plan_id', $lockedPlan->id))

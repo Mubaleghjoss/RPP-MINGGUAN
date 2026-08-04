@@ -341,6 +341,13 @@ class PaudCompletionWizardTest extends TestCase
             if ($semester === 1) {
                 $placement->materials()->attach($level->materialCatalogItems()->pluck('id'));
             }
+            RppWeekItem::query()->create([
+                'rpp_plan_id' => $plans[$semester]->id, 'calendar_week_id' => $weeks[$semester]->id,
+                'syllabus_item_id' => $syllabus->id, 'source_fingerprint' => 'matrix-support:'.$semester,
+                'occurrence_no' => 1, 'rpp_matrix_column_id' => $columns->last()->id,
+                'strand' => $columns->last()->label, 'content' => 'Penguatan kegiatan semester '.$semester,
+                'progress_kind' => 'penguatan', 'source' => 'manual', 'is_locked' => true, 'position' => 2,
+            ]);
         }
 
         $readyForValidation = app(RppCompletionService::class)->report($year, $level);
@@ -350,6 +357,7 @@ class PaudCompletionWizardTest extends TestCase
             $this->assertTrue($step['diagnostics']['validation_pending']);
             $this->assertSame(0, $step['diagnostics']['syllabus_missing']);
             $this->assertSame(0, $step['diagnostics']['target_issue_count']);
+            $this->assertSame(0, $step['diagnostics']['matrix_missing_cells']);
             $plans[$semester]->update(['status' => 'validated', 'coverage_percent' => 100, 'validated_at' => now()]);
         }
         RppAnnualValidation::query()->updateOrCreate(

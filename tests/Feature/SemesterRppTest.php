@@ -33,9 +33,9 @@ class SemesterRppTest extends TestCase
         $this->assertSame(26, AcademicYear::query()->where('is_active', true)->firstOrFail()->weeks()->where('semester', 2)->count());
         $this->assertSame(0, RppPlan::query()->whereHas('items.week', fn ($query) => $query->whereColumn('calendar_weeks.semester', '!=', 'rpp_plans.semester'))->count());
         $this->assertSame(
-            GgbItem::query()->whereDoesntHave('children')->count(),
-            RppMaterialCatalogItem::query()->where('source_kind', 'ggb')->count(),
-            'Setiap butir GGB tanpa anak harus tersedia di katalog materi.'
+            GgbItem::query()->where('rpp_role', 'material')->count(),
+            RppMaterialCatalogItem::query()->where('source_kind', 'ggb')->where('is_schedulable', true)->count(),
+            'Hanya GGB berperan Materi yang boleh tersedia untuk penjadwalan RPP.'
         );
         $this->assertSame(
             RppMaterialCatalogItem::query()->count(),

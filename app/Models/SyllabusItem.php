@@ -10,7 +10,7 @@ class SyllabusItem extends Model
 
     protected $attributes = ['source_semester' => '1', 'semester_scope' => '1'];
 
-    protected $casts = ['needs_allocation' => 'boolean', 'is_duplicate' => 'boolean', 'source_payload' => 'array'];
+    protected $casts = ['needs_allocation' => 'boolean', 'is_duplicate' => 'boolean', 'is_source_artifact' => 'boolean', 'source_payload' => 'array'];
 
     public function level()
     {

@@ -6,6 +6,7 @@ use App\Models\AcademicYear;
 use App\Models\Level;
 use App\Models\RppPlan;
 use App\Models\RppProgressTarget;
+use Illuminate\Validation\ValidationException;
 use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 use PhpOffice\PhpSpreadsheet\Cell\DataType;
 use PhpOffice\PhpSpreadsheet\IOFactory;
@@ -31,6 +32,7 @@ class CurriculumWorkbookExporter
         private readonly RppMatrixPresetService $presets,
         private readonly RppMaterialCatalogService $catalog,
         private readonly AcademicCalendarService $calendar,
+        private readonly RppMatrixFillService $matrixFill,
     ) {}
 
     public function activeYearLabel(): string
@@ -63,6 +65,12 @@ class CurriculumWorkbookExporter
         $this->matrix->ensureMonthFocuses($plan);
         $plan->load('monthFocuses');
         $weeks = $this->calendar->weeksForPlan($plan);
+        $matrixStats = $this->matrixFill->stats($plan);
+        if ($matrixStats['missing'] > 0) {
+            throw ValidationException::withMessages([
+                'matrix' => "Ekspor ditahan karena {$matrixStats['missing']} sel materi pada minggu efektif masih kosong. Buka Kelengkapan Matriks dan isi semua sel terlebih dahulu.",
+            ]);
+        }
 
         $book = new Spreadsheet;
         $book->removeSheetByIndex(0);
@@ -105,7 +113,7 @@ class CurriculumWorkbookExporter
         $book->addSheet($sheet);
         $sheet->mergeCells('A1:H1');
         $sheet->setCellValue('A1', "RINGKASAN RPP {$plan->level->name} · SEMESTER {$plan->semester}");
-        $catalogQuery = $plan->level->materialCatalogItems();
+        $catalogQuery = $plan->level->materialCatalogItems()->where('is_schedulable', true)->where('is_active', true);
         $catalogTotal = (clone $catalogQuery)->count();
         $catalogUsed = (clone $catalogQuery)->whereHas('placements', fn ($query) => $query->where('rpp_plan_id', $plan->id))->count();
         $catalogMissing = max(0, $catalogTotal - $catalogUsed);
@@ -326,7 +334,7 @@ class CurriculumWorkbookExporter
         $this->styleTitle($sheet, 'A1:O1');
         $this->styleHeader($sheet, 'A4:O4');
 
-        $items = $plan->level->materialCatalogItems()->with([
+        $items = $plan->level->materialCatalogItems()->where('is_schedulable', true)->where('is_active', true)->with([
             'matrixColumn',
             'ggbItem.document',
             'ggbItem.syllabusItems.document',
@@ -351,14 +359,22 @@ class CurriculumWorkbookExporter
 
             foreach ($group as $material) {
                 $ggb = $material->ggbItem;
-                $linkedSyllabus = $ggb ? $ggb->syllabusItems->where('is_duplicate', false) : collect([$material->syllabusItem])->filter();
+                $linkedSyllabus = $ggb
+                    ? $ggb->syllabusItems->filter(fn ($item) => ! $item->is_duplicate && ! $item->is_source_artifact)
+                    : collect([$material->syllabusItem])->filter(fn ($item) => $item && ! $item->is_source_artifact);
                 $yearPlacements = $material->placements->filter(fn ($placement) => (int) $placement->plan?->academic_year_id === (int) $plan->academic_year_id);
                 $semesterOne = $yearPlacements->filter(fn ($placement) => (int) $placement->plan?->semester === 1)->sortBy(fn ($placement) => $placement->week?->week_number);
                 $semesterTwo = $yearPlacements->filter(fn ($placement) => (int) $placement->plan?->semester === 2)->sortBy(fn ($placement) => $placement->week?->week_number);
-                $source = $ggb ? ($linkedSyllabus->isNotEmpty() ? 'GGB + Silabus' : 'GGB') : 'Silabus tambahan';
-                $sourceTrace = $ggb
-                    ? $ggb->document->title.' hlm. '.$ggb->source_page.' · '.$ggb->stable_code
-                    : $material->syllabusItem->document->title.' hlm. '.$material->syllabusItem->source_page.' · '.$material->syllabusItem->stable_code;
+                $source = $material->source_kind === 'activity'
+                    ? 'Bank Kegiatan'
+                    : ($ggb ? ($linkedSyllabus->isNotEmpty() ? 'GGB + Silabus' : 'GGB') : 'Silabus tambahan');
+                $sourceTrace = $material->source_kind === 'activity'
+                    ? 'Bank Kegiatan sistem - '.$material->origin_key
+                    : ($ggb
+                        ? $ggb->document->title.' hlm. '.$ggb->source_page.' - '.$ggb->stable_code
+                        : ($material->syllabusItem
+                            ? $material->syllabusItem->document->title.' hlm. '.$material->syllabusItem->source_page.' - '.$material->syllabusItem->stable_code
+                            : 'Kegiatan yang dikelola Admin'));
                 $this->writeTextRow($sheet, $row, [
                     $material->display_code,
                     $source,

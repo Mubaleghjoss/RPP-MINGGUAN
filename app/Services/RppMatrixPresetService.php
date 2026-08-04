@@ -32,7 +32,13 @@ class RppMatrixPresetService
     public function syncLevel(Level $level): void
     {
         DB::transaction(function () use ($level) {
-            $items = $level->syllabusItems()->where('is_duplicate', false)->orderBy('sort_order')->get();
+            $allItems = $level->syllabusItems()->where('is_duplicate', false)->orderBy('sort_order')->get();
+            $artifacts = $allItems->filter(fn (SyllabusItem $item) => $this->isSourceArtifact($item));
+            SyllabusItem::query()->whereIn('id', $artifacts->pluck('id'))->update(['is_source_artifact' => true]);
+            SyllabusItem::query()->whereIn('id', $allItems->pluck('id')->diff($artifacts->pluck('id')))->update(['is_source_artifact' => false]);
+            RppMatrixMapping::query()->whereIn('syllabus_item_id', $artifacts->pluck('id'))
+                ->whereNull('last_edited_by')->delete();
+            $items = $allItems->reject(fn (SyllabusItem $item) => $this->isSourceArtifact($item));
             foreach ($items as $item) {
                 $rule = $this->ruleFor($item);
                 $column = RppMatrixColumn::query()->firstOrCreate(
@@ -66,6 +72,17 @@ class RppMatrixPresetService
             RppMatrixColumn::query()->where('level_id', $level->id)->whereNull('last_edited_by')
                 ->whereDoesntHave('mappings')->whereDoesntHave('placements')->delete();
         });
+    }
+
+    public function isSourceArtifact(SyllabusItem $item): bool
+    {
+        $normalize = fn ($value) => Str::of((string) $value)->lower()->ascii()->replaceMatches('/[^a-z0-9]+/', '')->toString();
+
+        return $normalize($item->category) === 'senin'
+            && $normalize($item->title) === 'rabu'
+            && $normalize($item->allocation_text) === 'jumat'
+            && $normalize($item->reference_text) === 'sabtu'
+            && $normalize($item->assessment_text) === 'minggu';
     }
 
     private function ruleFor(SyllabusItem $item): array

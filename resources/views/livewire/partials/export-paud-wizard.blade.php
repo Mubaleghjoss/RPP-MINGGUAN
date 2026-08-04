@@ -57,6 +57,9 @@
                         @if(($diagnostics['target_issue_count'] ?? 0) > 0)
                             <a href="{{ route('exports.index', ['level' => $plan->level_id, 'semester' => $stepSemester, 'focus' => 'targets']) }}#target-editor" class="button-secondary">Perbaiki {{ $diagnostics['target_issue_count'] }} Target</a>
                         @endif
+                        @if(($diagnostics['matrix_missing_cells'] ?? 0) > 0)
+                            <a href="{{ route('exports.index', ['level' => $plan->level_id, 'semester' => $stepSemester, 'detail' => 'gaps']) }}#matrix-gaps" class="button-secondary">Lihat {{ $diagnostics['matrix_missing_cells'] }} Sel Kosong</a>
+                        @endif
                         @if(($diagnostics['validation_pending'] ?? false) && ($diagnostics['can_validate'] ?? false))
                             <button type="button" wire:click="validatePaudSemester({{ $stepSemester }})" wire:loading.attr="disabled" wire:target="validatePaudSemester({{ $stepSemester }})" class="button-secondary"><span wire:loading.remove wire:target="validatePaudSemester({{ $stepSemester }})">Validasi Semester {{ $stepSemester }}</span><span wire:loading wire:target="validatePaudSemester({{ $stepSemester }})">Memeriksa…</span></button>
                         @endif

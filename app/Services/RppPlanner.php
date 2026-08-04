@@ -18,6 +18,7 @@ class RppPlanner
         private readonly RppMaterialCatalogService $catalog,
         private readonly AcademicCalendarService $calendar,
         private readonly RppAnnualGgbService $annualGgb,
+        private readonly RppMatrixFillService $matrixFill,
     ) {}
 
     public function scheduleOne(RppPlan $plan, int $syllabusItemId, ?int $userId): RppWeekItem
@@ -36,6 +37,9 @@ class RppPlanner
             }
             if ($item->is_duplicate) {
                 throw ValidationException::withMessages(['material' => 'Materi duplikat tidak dapat dijadwalkan.']);
+            }
+            if ($item->is_source_artifact) {
+                throw ValidationException::withMessages(['material' => 'Baris ini adalah artefak header dokumen sumber dan tidak dapat dijadwalkan.']);
             }
             if ($item->needs_allocation || blank($item->allocation_text) || (int) $item->recommended_sessions < 1) {
                 throw ValidationException::withMessages(['material' => 'Lengkapi alokasi dan jumlah pertemuan minimal 1 sebelum menjadwalkan materi.']);
@@ -61,6 +65,7 @@ class RppPlanner
             $siblings = SyllabusItem::query()
                 ->where('level_id', $lockedPlan->level_id)
                 ->where('is_duplicate', false)
+                ->where('is_source_artifact', false)
                 ->where('needs_allocation', false)
                 ->whereIn('semester_scope', [(string) $lockedPlan->semester, 'both'])
                 ->orderBy('sort_order')
@@ -153,6 +158,7 @@ class RppPlanner
             $groups = $plan->level->syllabusItems
                 ->whereNotIn('id', $progressSyllabusIds)
                 ->where('is_duplicate', false)
+                ->where('is_source_artifact', false)
                 ->where('needs_allocation', false)
                 ->whereIn('semester_scope', [(string) $plan->semester, 'both'])
                 ->filter(fn (SyllabusItem $item) => filled($item->allocation_text) && (int) $item->recommended_sessions >= 1 && $item->matrixMapping?->column?->is_active)
@@ -172,6 +178,7 @@ class RppPlanner
             }
 
             $this->annualGgb->rebuildForPlan($plan);
+            $this->matrixFill->fill($plan);
 
             $this->refreshCoverage($plan);
             $plan->update(['status' => 'draft', 'validated_at' => null]);
@@ -259,8 +266,12 @@ class RppPlanner
     public function generateAll(): void
     {
         $this->catalog->syncAll();
-        RppPlan::query()->with(['level.syllabusItems', 'academicYear.weeks', 'items', 'progressTargets'])
-            ->each(fn (RppPlan $plan) => $this->generate($plan, false));
+        $plans = RppPlan::query()->with(['level.syllabusItems', 'academicYear.weeks', 'items', 'progressTargets'])->get();
+        $plans->each(fn (RppPlan $plan) => $this->generate($plan, false));
+        // Pass kedua memungkinkan semester yang tidak mempunyai sumber sendiri
+        // memakai materi semester pasangannya sebagai penguatan, tanpa mengubah
+        // cakupan Silabus semester.
+        $plans->each(fn (RppPlan $plan) => $this->matrixFill->fill($plan->fresh()));
     }
 
     public function validate(RppPlan $plan): bool
@@ -273,6 +284,12 @@ class RppPlanner
         if ($plan->progressTargets->contains(fn ($target) => ! $this->progress->isComplete($target))) {
             return false;
         }
+        if ($this->matrixFill->stats($plan)['missing'] > 0) {
+            return false;
+        }
+        if ($plan->items()->whereHas('materials', fn ($query) => $query->where('is_schedulable', false))->exists()) {
+            return false;
+        }
         $plan->update(['status' => 'validated', 'validated_at' => now()]);
 
         return true;
@@ -282,9 +299,14 @@ class RppPlanner
     {
         $total = $plan->level->syllabusItems()
             ->where('is_duplicate', false)
+            ->where('is_source_artifact', false)
             ->whereIn('semester_scope', [(string) $plan->semester, 'both'])
             ->count();
-        $planned = $plan->items()->distinct('syllabus_item_id')->count('syllabus_item_id');
+        $planned = $plan->items()->whereHas('syllabusItem', fn ($query) => $query
+            ->where('is_duplicate', false)
+            ->where('is_source_artifact', false)
+            ->whereIn('semester_scope', [(string) $plan->semester, 'both']))
+            ->distinct('syllabus_item_id')->count('syllabus_item_id');
         $plan->update(['coverage_percent' => $total ? round(($planned / $total) * 100, 2) : 0]);
         $plan->refresh();
     }

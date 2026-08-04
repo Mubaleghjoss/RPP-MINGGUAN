@@ -13,6 +13,7 @@ class RppCompletionService
         private readonly AcademicCalendarService $calendar,
         private readonly RppMaterialCatalogService $catalog,
         private readonly RppProgressService $progress,
+        private readonly RppMatrixFillService $matrixFill,
     ) {}
 
     public function report(AcademicYear $year, Level $level): array
@@ -25,7 +26,7 @@ class RppCompletionService
             ->keyBy('semester');
 
         $calendarStep = $this->calendarStep($year, $plans);
-        $catalogQuery = $level->materialCatalogItems()->where('source_kind', 'ggb');
+        $catalogQuery = $level->materialCatalogItems()->where('source_kind', 'ggb')->where('is_schedulable', true)->where('is_active', true);
         $coveragePlan = $plans->first();
         $ggbCounts = $coveragePlan ? $this->catalog->ggbStatusCounts($coveragePlan) : [
             'all' => (clone $catalogQuery)->count(),
@@ -184,6 +185,7 @@ class RppCompletionService
 
         $total = $plan->level->syllabusItems()
             ->where('is_duplicate', false)
+            ->where('is_source_artifact', false)
             ->whereIn('semester_scope', [(string) $semester, 'both'])
             ->count();
         $planned = $plan->items()->whereNotNull('syllabus_item_id')->distinct('syllabus_item_id')->count('syllabus_item_id');
@@ -221,6 +223,14 @@ class RppCompletionService
         if ($plan->status !== 'validated') {
             $blockers[] = "RPP Semester {$semester} belum divalidasi.";
         }
+        $matrixStats = $this->matrixFill->stats($plan);
+        if ($matrixStats['missing'] > 0) {
+            $blockers[] = "Kelengkapan matriks Semester {$semester} masih {$matrixStats['percent']}% ({$matrixStats['missing']} sel kosong).";
+        }
+        $invalidOutlineCount = $plan->items()->whereHas('materials', fn ($query) => $query->where('is_schedulable', false))->count();
+        if ($invalidOutlineCount > 0) {
+            $blockers[] = "{$invalidOutlineCount} penempatan masih berisi Subjudul atau Artefak Sumber.";
+        }
 
         return [
             'key' => "semester_{$semester}",
@@ -236,8 +246,10 @@ class RppCompletionService
             'diagnostics' => [
                 'syllabus_missing' => $missing ?? 0,
                 'target_issue_count' => $targetIssueCount,
+                'matrix_missing_cells' => $matrixStats['missing'],
+                'invalid_outline_count' => $invalidOutlineCount,
                 'validation_pending' => $plan->status !== 'validated',
-                'can_validate' => ($missing ?? 0) === 0 && $targetIssueCount === 0,
+                'can_validate' => ($missing ?? 0) === 0 && $targetIssueCount === 0 && $matrixStats['missing'] === 0 && $invalidOutlineCount === 0,
             ],
         ];
     }

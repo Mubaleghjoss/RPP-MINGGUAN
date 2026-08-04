@@ -5,8 +5,8 @@ Panduan ini digunakan Admin untuk menyiapkan RPP PAUD Tahun Ajaran 2026/2027 dar
 ## Hasil akhir yang harus terlihat
 
 - Kalender Semester 1 dan Semester 2 mempunyai rentang yang valid serta minimal satu minggu efektif.
-- Seluruh 130 butir rinci GGB mempunyai semester dan kolom RPP.
-- Cakupan GGB tahunan menunjukkan `130/130` dan berstatus tervalidasi.
+- Seluruh materi GGB yang berperan **Materi** mempunyai semester dan kolom RPP. Subjudul dan artefak sumber tidak dihitung.
+- Cakupan GGB tahunan menunjukkan `100%` dan berstatus tervalidasi. Angka total mengikuti hasil normalisasi sumber secara dinamis.
 - Cakupan Silabus Semester 1 dan Semester 2 masing-masing `100%`.
 - Tilawati Semester 1 mencapai halaman `1–22`.
 - Tilawati Semester 2 mencapai halaman `23–44`.
@@ -52,7 +52,7 @@ Kalender dianggap siap ketika kedua semester memiliki rentang valid dan masing-m
 
 1. Pada langkah **Konfirmasi semester dan kolom GGB**, pilih **Buka Daftar GGB**.
 2. Periksa ringkasan **Bagi seimbang Semester 1 dan Semester 2**.
-3. Sistem membagi materi general secara berurutan di setiap kolom dengan target awal 65 materi Semester 1 dan 65 materi Semester 2.
+3. Sistem membagi materi general secara berurutan dan seimbang di setiap kolom. Jumlah setiap semester dihitung dari total materi sebenarnya; keputusan manual yang sudah ada tidak ditimpa.
 4. Untuk data awal, sistem menyarankan **Hafalan do’a-do’a harian** masuk ke kolom **Do'a-do'a Harian**. Periksa saran tersebut lalu centang persetujuan Admin.
 5. Isi **Alasan tindakan (wajib)**, misalnya:
 
@@ -71,7 +71,7 @@ Pembagian ini tidak mengubah keputusan semester yang sebelumnya sudah dikonfirma
 2. Isi kembali **Alasan tindakan**, misalnya `Lengkapi GGB PAUD satu tahun`.
 3. Pilih **Lengkapi GGB 1 Tahun**.
 4. Tunggu sampai pesan berhasil muncul.
-5. Pastikan kartu **Cakupan GGB 1 Tahun** menunjukkan `100%` dan `130/130 butir rinci`.
+5. Pastikan kartu **Cakupan GGB 1 Tahun** menunjukkan `100%` dan jumlah terpasang sama dengan total materi aktual.
 6. Pilih **Validasi GGB 1 Tahun**.
 7. Pastikan status berubah menjadi **Tervalidasi tahunan**.
 
@@ -83,7 +83,8 @@ Materi yang sudah dicakup oleh penempatan Silabus tidak digandakan. Materi tamba
 2. Pilih **Susun Otomatis** jika ada materi Silabus atau target yang belum ditempatkan.
 3. Buka **Atur Target** dan pastikan Tilawati PAUD menggunakan unit `halaman`, nomor awal `1`, dan nomor akhir `22`.
 4. Periksa matriks mingguan dan pastikan materi manual atau terkunci tetap benar.
-5. Pilih **Validasi Semester 1**.
+5. Periksa kartu **Kelengkapan Matriks**. Jika belum 100%, pilih **Lihat Sel Kosong**, lalu gunakan **Susun Otomatis**, Bank Kegiatan, atau isian manual.
+6. Pilih **Validasi Semester 1**.
 
 Jika validasi ditahan, pesan akan menyebutkan penyebabnya, misalnya jumlah Silabus yang belum dijadwalkan atau sisa halaman Tilawati. Perbaiki penyebab tersebut lalu ulangi validasi.
 
@@ -93,7 +94,8 @@ Jika validasi ditahan, pesan akan menyebutkan penyebabnya, misalnya jumlah Silab
 2. Pilih **Susun Otomatis** jika diperlukan.
 3. Pastikan target Tilawati menggunakan nomor awal `23` dan nomor akhir `44`.
 4. Periksa matriks mingguan.
-5. Pilih **Validasi Semester 2**.
+5. Pastikan **Kelengkapan Matriks** mencapai 100%.
+6. Pilih **Validasi Semester 2**.
 
 Setelah kedua semester selesai, target Tilawati tahunan harus menunjukkan `44/44`.
 
@@ -125,7 +127,9 @@ File Excel hasil ekspor berada di komputer lokal dan tidak dimasukkan ke GitHub.
 | Alasan tindakan wajib diisi | Tombol bulk ditekan tanpa alasan | Isi alasan minimal 5 karakter, misalnya `Penyusunan awal RPP PAUD`. |
 | Persetujuan saran kolom belum dicentang | Ada materi dengan saran kolom yang belum disetujui | Periksa judul dan kolom saran, lalu centang persetujuan Admin. |
 | Materi belum mempunyai saran kolom | Sistem tidak dapat menentukan kolom secara aman | Buka **Atur Kolom**, pilih kolom RPP, simpan revisi, lalu ulangi pembagian. |
-| Validasi GGB ditahan | Cakupan tahunan belum 130/130 | Jalankan **Lengkapi GGB 1 Tahun**, lalu periksa daftar materi yang masih belum masuk. |
+| Validasi GGB ditahan | Cakupan tahunan belum 100% | Jalankan **Lengkapi GGB 1 Tahun**, lalu periksa daftar materi yang masih belum masuk. |
+| Kelengkapan Matriks belum 100% | Ada perpotongan minggu efektif dan kolom aktif yang masih kosong | Buka **Lihat Sel Kosong**, jalankan **Susun Otomatis**, atur Bank Kegiatan, atau isi kegiatan manual satu kali. |
+| Subjudul muncul sebagai materi | Peran RPP suatu baris GGB belum tepat | Buka **Master Kurikulum → GGB**, ubah **Peran RPP** menjadi **Subjudul**, isi alasan revisi, lalu susun ulang. |
 | Minggu efektif tidak cukup | Rentang libur/evaluasi menutup terlalu banyak minggu | Perpanjang rentang semester atau sesuaikan acara kalender. Sistem tidak membuat tanggal fiktif. |
 | Cakupan Silabus belum 100% | Masih ada materi Silabus yang belum dijadwalkan | Buka Planner semester terkait, pilih **Belum dijadwalkan**, lalu susun otomatis atau jadwalkan manual. |
 | Target Tilawati belum selesai | Sebagian halaman belum mendapat minggu efektif | Pilih **Susun Otomatis**, periksa target dan jangkar manual, lalu validasi kembali. |

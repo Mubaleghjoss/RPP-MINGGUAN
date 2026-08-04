@@ -187,7 +187,8 @@ class CurriculumEditor extends Component
         return match ($this->tab) {
             'ggb' => $this->level->ggbItems()->with('document')
                 ->when($this->search !== '', fn ($query) => $query->where(fn ($q) => $q->where('stable_code', 'like', $term)->orWhere('aspect', 'like', $term)->orWhere('subaspect', 'like', $term)->orWhere('title', 'like', $term)))
-                ->when($this->filter !== '', fn ($query) => $query->where('kind', $this->filter))
+                ->when(in_array($this->filter, ['material', 'heading', 'artifact'], true), fn ($query) => $query->where('rpp_role', $this->filter))
+                ->when(in_array($this->filter, ['section', 'item'], true), fn ($query) => $query->where('kind', $this->filter))
                 ->orderBy(in_array($this->sortField, $this->sortableFields(), true) ? $this->sortField : 'sort_order', $direction)->paginate(100),
             'syllabus' => $this->level->syllabusItems()->with('document')
                 ->when($this->search !== '', fn ($query) => $query->where(fn ($q) => $q->where('stable_code', 'like', $term)->orWhere('category', 'like', $term)->orWhere('title', 'like', $term)->orWhere('description', 'like', $term)))
@@ -213,7 +214,7 @@ class CurriculumEditor extends Component
     private function sortableFields(): array
     {
         return match ($this->tab) {
-            'ggb' => ['sort_order', 'stable_code', 'aspect', 'subaspect', 'title'],
+            'ggb' => ['sort_order', 'stable_code', 'aspect', 'subaspect', 'title', 'rpp_role'],
             'syllabus' => ['sort_order', 'stable_code', 'category', 'title', 'recommended_sessions', 'semester_scope'],
             'link' => ['id', 'status', 'confidence'],
             'rpp' => ['calendar_week_id', 'strand', 'position', 'source'],
