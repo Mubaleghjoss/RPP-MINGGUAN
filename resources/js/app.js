@@ -1,6 +1,14 @@
 import './bootstrap';
 import { normalizeGridPatches, readCellValue } from './curriculum-grid';
 
+window.focusValidationField = (field) => {
+    if (!field) return;
+    const target = document.querySelector(`[data-validation-field="${CSS.escape(String(field))}"]`);
+    target?.focus();
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    target?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' });
+};
+
 window.spreadsheetGrid = (domain) => ({
     domain,
     pending: {},

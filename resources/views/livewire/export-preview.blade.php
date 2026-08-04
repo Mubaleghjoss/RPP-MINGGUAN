@@ -1,4 +1,4 @@
-<div x-data="spreadsheetGrid('rpp')" data-grid-domain="rpp" x-on:keydown.window="handleShortcut($event)" class="preview-grid space-y-6">
+<div x-data="spreadsheetGrid('rpp')" data-grid-domain="rpp" x-on:keydown.window="handleShortcut($event)" x-on:focus-validation-field.window="$nextTick(() => window.focusValidationField($event.detail.field))" class="preview-grid space-y-6">
     <header class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
         <div>
             <p class="text-sm font-semibold text-emerald-700">Preview matriks · {{ $plan->academicYear->label }}</p>
@@ -38,6 +38,10 @@
         <article class="panel p-4"><p class="text-sm text-slate-500">Konflik pemetaan</p><p class="metric-number mt-2">{{ $conflictCount }}</p><p class="mt-1 text-xs text-slate-500">{{ $unmappedCount }} materi belum dipetakan.</p></article>
         <a href="{{ route('exports.index', ['level' => $plan->level_id, 'semester' => $semester, 'detail' => 'ggb']) }}#ggb-detail" class="panel block cursor-pointer p-4 transition-colors duration-150 hover:border-emerald-400 hover:bg-emerald-50/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600"><p class="text-sm text-slate-500">Cakupan GGB 1 Tahun</p><p class="metric-number mt-2">{{ number_format($ggbCoverage['percent'], 1) }}%</p><p class="mt-1 text-xs text-slate-500">{{ $ggbCoverage['used'] }}/{{ $ggbCoverage['total'] }} butir rinci · {{ $annualValidation?->status === 'validated' ? 'Tervalidasi tahunan' : 'Lihat daftar' }}</p></a>
     </section>
+
+    @if($completionReport)
+        @include('livewire.partials.export-paud-wizard')
+    @endif
 
     @if($detail === 'ggb')
         @include('livewire.partials.export-ggb-detail')

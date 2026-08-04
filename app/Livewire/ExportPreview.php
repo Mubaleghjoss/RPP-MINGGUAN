@@ -16,6 +16,7 @@ use App\Models\SyllabusItem;
 use App\Services\AcademicCalendarService;
 use App\Services\CurriculumRevisionService;
 use App\Services\RppAnnualGgbService;
+use App\Services\RppCompletionService;
 use App\Services\RppMaterialCatalogService;
 use App\Services\RppMaterialPlacementService;
 use App\Services\RppMatrixPresetService;
@@ -61,6 +62,8 @@ class ExportPreview extends Component
     public ?int $ggbColumnId = null;
 
     public string $ggbReason = '';
+
+    public bool $ggbConfirmSuggestedMappings = false;
 
     public string $semesterOneStart = '';
 
@@ -137,6 +140,7 @@ class ExportPreview extends Component
         $this->resetMessages();
         $this->closeMaterialPicker();
         $this->selectedGgb = [];
+        $this->ggbConfirmSuggestedMappings = false;
         $this->resetPage('ggbPage');
     }
 
@@ -192,7 +196,33 @@ class ExportPreview extends Component
             $this->ggbColumnId = null;
             $this->ggbReason = '';
         } catch (ValidationException $exception) {
-            $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Konfirmasi GGB gagal.';
+            $this->applyValidationException($exception, [
+                'ids' => 'selectedGgb', 'selection' => 'selectedGgb', 'reason' => 'ggbReason',
+                'semester' => 'ggbSemester', 'columnId' => 'ggbColumnId', 'column' => 'ggbColumnId',
+            ], 'Konfirmasi GGB gagal.');
+        }
+    }
+
+    public function balancePaudGgb(RppAnnualGgbService $service): void
+    {
+        $this->resetMessages();
+        abort_unless($this->level()->code === 'PAUD', 422);
+        try {
+            $result = $service->confirmGeneralBalanced(
+                $this->level(),
+                $this->ggbReason,
+                $this->ggbConfirmSuggestedMappings,
+                Auth::id(),
+            );
+            $this->notice = $result['changed'] > 0
+                ? "{$result['changed']} materi dikonfirmasi: Semester 1 {$result['semester_1']} dan Semester 2 {$result['semester_2']}. Lanjutkan dengan Lengkapi GGB 1 Tahun."
+                : 'Pembagian semester sudah lengkap dan tidak memerlukan perubahan.';
+            $this->ggbReason = '';
+            $this->ggbConfirmSuggestedMappings = false;
+        } catch (ValidationException $exception) {
+            $this->applyValidationException($exception, [
+                'reason' => 'ggbReason', 'confirm_mapping' => 'ggbConfirmSuggestedMappings', 'mapping' => 'ggbColumnId',
+            ], 'Pembagian GGB PAUD gagal.');
         }
     }
 
@@ -205,7 +235,7 @@ class ExportPreview extends Component
             $this->ggbReason = '';
             $this->selectedGgb = [];
         } catch (ValidationException $exception) {
-            $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Bulk GGB gagal.';
+            $this->applyValidationException($exception, ['reason' => 'ggbReason'], 'Bulk GGB gagal.');
         } catch (Throwable $exception) {
             report($exception);
             $this->errorMessage = 'Bulk GGB gagal. Tidak ada perubahan yang diterapkan.';
@@ -214,10 +244,14 @@ class ExportPreview extends Component
 
     public function validateAnnualGgb(RppAnnualGgbService $service): void
     {
+        $this->resetMessages();
         $valid = $service->validateAnnual($this->year(), $this->level(), Auth::id());
-        $this->notice = $valid
-            ? 'Cakupan GGB satu tahun tervalidasi 100%.'
-            : 'Validasi tahunan ditahan karena masih ada materi GGB yang belum masuk RPP.';
+        if ($valid) {
+            $this->notice = 'Cakupan GGB satu tahun tervalidasi 100%.';
+        } else {
+            $coverage = app(RppMaterialCatalogService::class)->coverage($this->plan());
+            $this->errorMessage = "Validasi GGB ditahan: {$coverage['missing']} dari {$coverage['total']} materi belum masuk RPP. Jalankan Lengkapi GGB 1 Tahun terlebih dahulu.";
+        }
     }
 
     public function saveSemesterRanges(AcademicCalendarService $calendar): void
@@ -231,7 +265,11 @@ class ExportPreview extends Component
             $this->notice = 'Rentang Semester 1 dan 2 diperbarui. Jumlah minggu mengikuti tanggal Admin.';
             $this->hydrateSemesterRanges();
         } catch (ValidationException $exception) {
-            $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Rentang semester tidak dapat disimpan.';
+            $this->applyValidationException($exception, [
+                'semester_1_start' => 'semesterOneStart', 'semester_1_end' => 'semesterOneEnd',
+                'semester_2_start' => 'semesterTwoStart', 'semester_2_end' => 'semesterTwoEnd',
+                'semester' => 'semesterOneStart',
+            ], 'Rentang semester tidak dapat disimpan.');
         }
     }
 
@@ -257,7 +295,11 @@ class ExportPreview extends Component
             $this->notice = 'Rentang kalender disimpan dan RPP terdampak digeser ke minggu efektif berikutnya.';
             $this->resetCalendarForm();
         } catch (ValidationException $exception) {
-            $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Rentang kalender tidak dapat disimpan.';
+            $this->applyValidationException($exception, [
+                'type' => 'calendarType', 'title' => 'calendarTitle', 'details' => 'calendarDetails',
+                'starts_on' => 'calendarStartsOn', 'ends_on' => 'calendarEndsOn',
+                'level_ids' => 'calendarLevelIds', 'confirm_impact' => 'calendarConfirmImpact', 'calendar' => 'calendarStartsOn',
+            ], 'Rentang kalender tidak dapat disimpan.');
         } catch (Throwable $exception) {
             report($exception);
             $this->errorMessage = 'Rentang kalender gagal disimpan. Tidak ada perubahan yang diterapkan.';
@@ -438,9 +480,34 @@ class ExportPreview extends Component
     {
         $this->resetMessages();
         $valid = $planner->validate($this->plan());
-        $this->notice = $valid
-            ? "RPP Semester {$this->semester} tervalidasi."
-            : 'Validasi ditahan: cakupan atau target progres belum lengkap.';
+        if ($valid) {
+            $this->notice = "RPP Semester {$this->semester} tervalidasi.";
+        } else {
+            $report = app(RppCompletionService::class)->report($this->year(), $this->level());
+            $step = collect($report['steps'])->firstWhere('key', "semester_{$this->semester}");
+            $this->errorMessage = 'Validasi Semester '.$this->semester.' ditahan. '.($step['summary'] ?? 'Cakupan atau target progres belum lengkap.');
+        }
+    }
+
+    public function validatePaudSemester(int $semester, RppPlanner $planner): void
+    {
+        abort_unless($this->level()->code === 'PAUD' && in_array($semester, [1, 2], true), 422);
+        $this->resetMessages();
+        $plan = RppPlan::query()
+            ->where('academic_year_id', $this->year()->id)
+            ->where('level_id', $this->levelId)
+            ->where('semester', $semester)
+            ->firstOrFail();
+        $valid = $planner->validate($plan);
+        if ($valid) {
+            $this->notice = "RPP PAUD Semester {$semester} tervalidasi.";
+
+            return;
+        }
+
+        $report = app(RppCompletionService::class)->report($this->year(), $this->level());
+        $step = collect($report['steps'])->firstWhere('key', "semester_{$semester}");
+        $this->errorMessage = 'Validasi Semester '.$semester.' ditahan. '.($step['summary'] ?? 'Cakupan atau target progres belum lengkap.');
     }
 
     public function render(
@@ -450,6 +517,8 @@ class ExportPreview extends Component
         RppSchedulePatternService $patterns,
         RppMaterialCatalogService $catalog,
         AcademicCalendarService $calendar,
+        RppAnnualGgbService $annualGgb,
+        RppCompletionService $completion,
     ) {
         $presets->syncLevel($this->level());
         $plan = $this->plan()->load([
@@ -500,6 +569,8 @@ class ExportPreview extends Component
             ->filter(fn ($item) => in_array($item->schedule_pattern, ['unknown', 'tentative'], true) && ! $plan->items->contains('syllabus_item_id', $item->id));
         $ggbCoverage = $catalog->coverage($plan);
         $annualValidation = $plan->academicYear->annualValidations()->where('level_id', $plan->level_id)->first();
+        $completionReport = $plan->level->code === 'PAUD' ? $completion->report($plan->academicYear, $plan->level) : null;
+        $balancedPreview = $plan->level->code === 'PAUD' ? $annualGgb->balancedPreview($plan->level) : null;
         $ggbItems = null;
         if ($this->detail === 'ggb') {
             $usedScope = fn ($query) => $query->where('academic_year_id', $plan->academic_year_id)->where('level_id', $plan->level_id);
@@ -587,6 +658,8 @@ class ExportPreview extends Component
             'annualValidation' => $annualValidation,
             'calendarEvents' => $plan->academicYear->calendarEvents()->with('levels:id,name,code')->orderBy('starts_on')->get(),
             'calendarPreview' => $calendarPreview,
+            'completionReport' => $completionReport,
+            'balancedPreview' => $balancedPreview,
         ]);
     }
 
@@ -650,5 +723,20 @@ class ExportPreview extends Component
         $this->notice = '';
         $this->errorMessage = '';
         $this->resetErrorBag();
+    }
+
+    private function applyValidationException(ValidationException $exception, array $fieldMap = [], string $fallback = 'Data tidak valid.'): void
+    {
+        $firstField = null;
+        foreach ($exception->errors() as $field => $messages) {
+            $componentField = $fieldMap[$field] ?? $field;
+            $message = $messages[0] ?? $fallback;
+            $this->addError($componentField, $message);
+            $firstField ??= $componentField;
+        }
+        $this->errorMessage = collect($exception->errors())->flatten()->first() ?? $fallback;
+        if ($firstField) {
+            $this->dispatch('focus-validation-field', field: $firstField);
+        }
     }
 }

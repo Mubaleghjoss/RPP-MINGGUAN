@@ -99,3 +99,5 @@ npm.cmd run build
 GitHub Actions menjalankan Composer pada PHP 8.2, build Vite/Node 22, test SQLite, dan pemeriksaan bahwa tidak ada PDF/XLSX yang terlacak.
 
 Dokumentasi audit tambahan tersedia pada `docs/AUDIT_DATA_SUMBER.md` dan `docs/LAPORAN_IMPLEMENTASI.md`.
+
+Panduan operasional lengkap untuk menyiapkan contoh PAUD sampai kalender, GGB, Silabus, Tilawati, dan kedua semester berstatus 100% tersedia pada [`docs/PANDUAN_RPP_PAUD_100_PERSEN.md`](docs/PANDUAN_RPP_PAUD_100_PERSEN.md).
