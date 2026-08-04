@@ -6,6 +6,7 @@
             <p class="mt-2 max-w-3xl text-pretty text-slate-600">Draf otomatis mengikuti semester dan urutan silabus serta hanya menggunakan minggu efektif. Materi manual yang dikunci tidak berubah saat disusun ulang.</p>
         </div>
         <div class="flex flex-wrap gap-2">
+            <a href="{{ route('exports.index', ['level' => $level->id, 'semester' => $semester]) }}" class="button-secondary">Lihat Preview RPP</a>
             <button wire:click="generateAll" wire:loading.attr="disabled" class="button-secondary">Susun Semua Kelas</button>
             <button wire:click="generate" wire:loading.attr="disabled" class="button-primary">Susun {{ $level->name }}</button>
             <button wire:click="validatePlan" wire:loading.attr="disabled" class="button-secondary">Validasi</button>

@@ -7,6 +7,7 @@ use App\Models\GgbSyllabusLink;
 use App\Models\Level;
 use App\Models\RevisionBatch;
 use App\Models\RevisionItem;
+use App\Models\RppMaterialCatalogItem;
 use App\Models\RppMatrixColumn;
 use App\Models\RppMatrixMapping;
 use App\Models\RppMonthFocus;
@@ -32,6 +33,7 @@ class CurriculumRevisionService
         'progress_target' => ['unit_label', 'range_start', 'range_end', 'strategy'],
         'matrix_column' => ['aspect_label', 'subaspect_label', 'label', 'sort_order', 'width', 'is_active'],
         'matrix_mapping' => ['rpp_matrix_column_id'],
+        'material_catalog' => ['rpp_matrix_column_id'],
         'month_focus' => ['focus_text', 'is_locked'],
     ];
 
@@ -383,6 +385,13 @@ class CurriculumRevisionService
                 throw ValidationException::withMessages(['grid' => 'Materi hanya dapat dipetakan ke kolom pada jenjang yang sama.']);
             }
         }
+        if ($domain === 'material_catalog' && isset($normalized['rpp_matrix_column_id'])) {
+            $catalog = $model instanceof RppMaterialCatalogItem ? $model : throw new RuntimeException('Katalog materi tidak valid.');
+            if (! RppMatrixColumn::query()->whereKey($normalized['rpp_matrix_column_id'])->where('level_id', $catalog->level_id)->where('is_active', true)->exists()) {
+                throw ValidationException::withMessages(['grid' => 'Materi katalog hanya dapat dipetakan ke kolom aktif pada jenjang yang sama.']);
+            }
+            $normalized['mapping_status'] = 'mapped';
+        }
         if ($domain === 'matrix_column' && (($normalized['is_active'] ?? true) === false) && $model->mappings()->exists()) {
             throw ValidationException::withMessages(['grid' => 'Kolom yang masih memiliki materi tidak dapat dinonaktifkan. Pindahkan pemetaannya terlebih dahulu.']);
         }
@@ -414,6 +423,7 @@ class CurriculumRevisionService
             'progress_target' => ($withTrashed ? RppProgressTarget::withTrashed() : RppProgressTarget::query())->with('plan')->findOrFail($id),
             'matrix_column' => RppMatrixColumn::query()->findOrFail($id),
             'matrix_mapping' => RppMatrixMapping::query()->with('syllabusItem')->findOrFail($id),
+            'material_catalog' => RppMaterialCatalogItem::query()->findOrFail($id),
             'month_focus' => RppMonthFocus::query()->with('plan')->findOrFail($id),
             default => throw ValidationException::withMessages(['grid' => 'Jenis tabel tidak valid.']),
         };
@@ -427,6 +437,7 @@ class CurriculumRevisionService
             'rpp', 'progress_target', 'month_focus' => $model->plan()->value('level_id'),
             'matrix_column' => $model->level_id,
             'matrix_mapping' => $model->syllabusItem()->value('level_id'),
+            'material_catalog' => $model->level_id,
             default => null,
         };
         if ($levelId) {

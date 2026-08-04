@@ -29,6 +29,7 @@ class CurriculumWorkbookExporter
         private readonly RppProgressService $progress,
         private readonly RppMatrixService $matrix,
         private readonly RppMatrixPresetService $presets,
+        private readonly RppMaterialCatalogService $catalog,
     ) {}
 
     public function activeYearLabel(): string
@@ -46,6 +47,7 @@ class CurriculumWorkbookExporter
         abort_unless(in_array($semester, [1, 2], true), 422);
         $year = AcademicYear::query()->where('is_active', true)->firstOrFail();
         $this->presets->syncLevel($level);
+        $this->catalog->syncLevel($level);
         $plan = RppPlan::query()
             ->where('academic_year_id', $year->id)
             ->where('level_id', $level->id)
@@ -53,6 +55,8 @@ class CurriculumWorkbookExporter
             ->with([
                 'level', 'academicYear', 'items.week', 'items.matrixColumn',
                 'items.syllabusItem.document', 'items.syllabusItem.ggbItems.document',
+                'items.materials.ggbItem.document', 'items.materials.ggbItem.syllabusItems.document',
+                'items.materials.syllabusItem.document',
                 'progressTargets.syllabusItem.document',
             ])->firstOrFail();
         $this->matrix->ensureMonthFocuses($plan);
@@ -67,7 +71,19 @@ class CurriculumWorkbookExporter
             ->setDescription('Matriks RPP per jenjang dan semester berdasarkan GGB dan Silabus.');
 
         $this->buildSummary($book, $plan);
-        $this->buildRpp($book, $plan, $weeks);
+        $rppLinks = $this->buildRpp($book, $plan, $weeks);
+        $materialAnchors = $this->buildMaterials($book, $plan, $rppLinks['catalog_cells']);
+        foreach ($rppLinks['column_cells'] as $columnId => $coordinates) {
+            if (! isset($materialAnchors[$columnId])) {
+                continue;
+            }
+            foreach ($coordinates as $coordinate) {
+                $rppLinks['sheet']->getCell($coordinate)->getHyperlink()
+                    ->setUrl("#'{$materialAnchors[$columnId]['sheet']}'!A{$materialAnchors[$columnId]['row']}")
+                    ->setTooltip('Buka kategori materi');
+                $rppLinks['sheet']->getStyle($coordinate)->getFont()->setColor(new Color('0563C1'))->setUnderline(true);
+            }
+        }
         $book->setActiveSheetIndex(0);
 
         $safeCode = preg_replace('/[^A-Za-z0-9_-]+/', '_', $level->code);
@@ -88,12 +104,24 @@ class CurriculumWorkbookExporter
         $book->addSheet($sheet);
         $sheet->mergeCells('A1:H1');
         $sheet->setCellValue('A1', "RINGKASAN RPP {$plan->level->name} · SEMESTER {$plan->semester}");
+        $catalogQuery = $plan->level->materialCatalogItems();
+        $catalogTotal = (clone $catalogQuery)->count();
+        $catalogUsed = (clone $catalogQuery)->whereHas('placements', fn ($query) => $query->where('rpp_plan_id', $plan->id))->count();
+        $catalogMissing = max(0, $catalogTotal - $catalogUsed);
+        $catalogPercent = $catalogTotal ? $catalogUsed / $catalogTotal : 1;
+        $ggbCoverage = $this->catalog->coverage($plan);
         $sheet->fromArray([
-            ['Tahun Ajaran', $plan->academicYear->label, 'Status', $plan->status === 'validated' ? 'Tervalidasi' : 'Draf'],
-            ['Jenjang', $plan->level->name, 'Cakupan', (float) $plan->coverage_percent / 100],
-            ['Semester', $plan->semester, 'Dibuat', now()->format('d-m-Y H:i')],
+            ['Tahun Ajaran', $plan->academicYear->label, 'Status', $plan->status === 'validated' ? 'Tervalidasi' : 'Draf', 'Katalog materi', $catalogTotal, 'Terpasang', $catalogUsed],
+            ['Jenjang', $plan->level->name, 'Cakupan Silabus', (float) $plan->coverage_percent / 100, 'Belum terpasang', $catalogMissing, 'Cakupan katalog', $catalogPercent],
+            ['Semester RPP', $plan->semester, 'Dibuat', now()->format('d-m-Y H:i'), 'Cakupan GGB', $ggbCoverage['percent'] / 100, 'GGB belum masuk', $ggbCoverage['missing']],
         ], null, 'A3');
         $sheet->getStyle('D4')->getNumberFormat()->setFormatCode('0.0%');
+        $sheet->getStyle('H4')->getNumberFormat()->setFormatCode('0.0%');
+        $sheet->getStyle('F5')->getNumberFormat()->setFormatCode('0.0%');
+        $sheet->setCellValue('A6', 'Buka kamus materi lengkap dua semester');
+        $sheet->mergeCells('A6:H6');
+        $sheet->getCell('A6')->getHyperlink()->setUrl("#'{$this->materialSheetName($plan->level)}'!A1")->setTooltip('Buka sheet materi');
+        $sheet->getStyle('A6')->getFont()->setColor(new Color('0563C1'))->setUnderline(true)->setBold(true);
 
         $sheet->fromArray(['Kode Materi', 'Target', 'Pencapaian', 'Sisa', 'Status', 'Alokasi', 'Sumber', 'Semester Sumber'], null, 'A8');
         $row = 9;
@@ -140,7 +168,7 @@ class CurriculumWorkbookExporter
         $sheet->getPageSetup()->setOrientation(PageSetup::ORIENTATION_LANDSCAPE)->setFitToWidth(1)->setFitToHeight(0);
     }
 
-    private function buildRpp(Spreadsheet $book, RppPlan $plan, $weeks): void
+    private function buildRpp(Spreadsheet $book, RppPlan $plan, $weeks): array
     {
         $sheet = new Worksheet($book, "RPP Semester {$plan->semester}");
         $book->addSheet($sheet);
@@ -151,6 +179,8 @@ class CurriculumWorkbookExporter
         $materialStart = 5;
         $materialEnd = 4 + $columns->count();
         $row = 1;
+        $columnCells = [];
+        $catalogCells = [];
 
         foreach ($weeks->chunk(13)->values() as $trimesterIndex => $trimesterWeeks) {
             $trimester = $this->matrix->trimesterNumber((int) $plan->semester, $trimesterIndex);
@@ -171,8 +201,7 @@ class CurriculumWorkbookExporter
             $sheet->mergeCells("{$lastColumn}{$row}:{$lastColumn}".($row + 2));
             $sheet->setCellValue("{$lastColumn}{$row}", "Paraf\nPengajar");
 
-            $this->writeGroupedHeaders($sheet, $columns, 'aspect_label', $materialStart, $row);
-            $this->writeGroupedHeaders($sheet, $columns, 'subaspect_label', $materialStart, $row + 1);
+            $this->writeMatrixHeaders($sheet, $columns, $materialStart, $row);
             foreach ($columns->values() as $index => $column) {
                 $sheet->setCellValue([5 + $index, $row + 2], $column->label);
             }
@@ -204,11 +233,15 @@ class CurriculumWorkbookExporter
                         $value = $cellItems->map(function ($item) {
                             $progress = $item->progress_start === null ? '' : "\n".($item->progress_kind === 'penguatan' ? 'Penguatan ' : '').$item->progress_start.'–'.$item->progress_end;
 
-                            return $item->content.$progress;
+                            return $this->catalog->placementLabel($item).$progress;
                         })->implode("\n\n");
                         $sheet->setCellValueExplicit([5 + $index, $row], $value, DataType::TYPE_STRING);
                         if ($cellItems->isNotEmpty()) {
                             $coordinate = Coordinate::stringFromColumnIndex(5 + $index).$row;
+                            $columnCells[$column->id][] = $coordinate;
+                            foreach ($cellItems->flatMap->materials->unique('id') as $material) {
+                                $catalogCells[$material->id] ??= $coordinate;
+                            }
                             $comment = $sheet->getComment($coordinate);
                             $comment->setAuthor('Sistem RPP PPG');
                             $comment->getText()->createTextRun($cellItems->map(fn ($item) => $this->matrix->sourceNote($item))->implode("\n\n---\n\n"));
@@ -250,19 +283,136 @@ class CurriculumWorkbookExporter
         $sheet->getPageSetup()->setOrientation(PageSetup::ORIENTATION_LANDSCAPE)->setPaperSize(PageSetup::PAPERSIZE_A4)->setFitToWidth(1)->setFitToHeight(0);
         $sheet->getPageMargins()->setTop(0.3)->setBottom(0.3)->setLeft(0.2)->setRight(0.2);
         $sheet->getPageSetup()->setPrintArea("A1:{$lastColumn}".($row - 1));
+
+        return ['sheet' => $sheet, 'column_cells' => $columnCells, 'catalog_cells' => $catalogCells];
     }
 
-    private function writeGroupedHeaders(Worksheet $sheet, $columns, string $field, int $startColumn, int $row): void
+    private function buildMaterials(Spreadsheet $book, RppPlan $plan, array $rppCatalogCells): array
+    {
+        $sheetName = $this->materialSheetName($plan->level);
+        $sheet = new Worksheet($book, $sheetName);
+        $book->addSheet($sheet);
+        $sheet->mergeCells('A1:O1');
+        $sheet->setCellValue('A1', 'KAMUS MATERI '.mb_strtoupper($plan->level->name).' · SEMESTER 1 DAN 2');
+        $sheet->mergeCells('A2:O2');
+        $sheet->setCellValue('A2', 'Kode berlaku tetap untuk dua semester. Klik kode yang sudah digunakan untuk kembali ke RPP semester terpilih.');
+        $headers = [
+            'Kode Ringkas', 'Sumber', 'Semester', 'Aspek GGB', 'Subaspek', 'Kolom RPP', 'Judul Materi',
+            'Rincian GGB', 'Silabus Terkait', 'Alokasi', 'Status S1', 'Minggu S1', 'Status S2', 'Minggu S2', 'Dokumen / Halaman / Stable Code',
+        ];
+        $sheet->fromArray($headers, null, 'A4');
+        $this->styleTitle($sheet, 'A1:O1');
+        $this->styleHeader($sheet, 'A4:O4');
+
+        $items = $plan->level->materialCatalogItems()->with([
+            'matrixColumn',
+            'ggbItem.document',
+            'ggbItem.syllabusItems.document',
+            'syllabusItem.document',
+            'placements.plan',
+            'placements.week',
+        ])->get()->sortBy(fn ($item) => sprintf('%010d-%010d', $item->matrixColumn?->sort_order ?? 999999, $item->sort_order));
+        $anchors = [];
+        $row = 5;
+        foreach ($items->groupBy(fn ($item) => $item->rpp_matrix_column_id ?: 0) as $columnId => $group) {
+            $column = $group->first()->matrixColumn;
+            $sheet->mergeCells("A{$row}:O{$row}");
+            $sheet->setCellValue("A{$row}", $column
+                ? $column->aspect_label.' · '.($column->subaspect_label ?: 'Tanpa Subaspek').' · '.$column->label
+                : 'BELUM DIPETAKAN');
+            $this->styleHeader($sheet, "A{$row}:O{$row}");
+            $sheet->getRowDimension($row)->setRowHeight(24);
+            if ($column) {
+                $anchors[$column->id] = ['sheet' => $sheetName, 'row' => $row];
+            }
+            $row++;
+
+            foreach ($group as $material) {
+                $ggb = $material->ggbItem;
+                $linkedSyllabus = $ggb ? $ggb->syllabusItems->where('is_duplicate', false) : collect([$material->syllabusItem])->filter();
+                $yearPlacements = $material->placements->filter(fn ($placement) => (int) $placement->plan?->academic_year_id === (int) $plan->academic_year_id);
+                $semesterOne = $yearPlacements->filter(fn ($placement) => (int) $placement->plan?->semester === 1)->sortBy(fn ($placement) => $placement->week?->week_number);
+                $semesterTwo = $yearPlacements->filter(fn ($placement) => (int) $placement->plan?->semester === 2)->sortBy(fn ($placement) => $placement->week?->week_number);
+                $source = $ggb ? ($linkedSyllabus->isNotEmpty() ? 'GGB + Silabus' : 'GGB') : 'Silabus tambahan';
+                $sourceTrace = $ggb
+                    ? $ggb->document->title.' hlm. '.$ggb->source_page.' · '.$ggb->stable_code
+                    : $material->syllabusItem->document->title.' hlm. '.$material->syllabusItem->source_page.' · '.$material->syllabusItem->stable_code;
+                $this->writeTextRow($sheet, $row, [
+                    $material->display_code,
+                    $source,
+                    $material->semester_scope === 'both' ? 'Semester 1 & 2' : 'Semester '.$material->semester_scope,
+                    $ggb?->aspect ?: $column?->aspect_label,
+                    $ggb?->subaspect ?: $column?->subaspect_label,
+                    $column?->label ?: 'Belum dipetakan',
+                    $material->title,
+                    $ggb?->raw_text ?: $material->syllabusItem?->description,
+                    $linkedSyllabus->map(fn ($syllabus) => $syllabus->stable_code.' — '.$syllabus->title)->implode("\n"),
+                    $linkedSyllabus->pluck('allocation_text')->filter()->unique()->implode("\n"),
+                    $semesterOne->isNotEmpty() ? 'Terpasang' : 'Belum masuk',
+                    $semesterOne->map(fn ($placement) => 'M'.$placement->week?->week_number)->unique()->implode(', '),
+                    $semesterTwo->isNotEmpty() ? 'Terpasang' : 'Belum masuk',
+                    $semesterTwo->map(fn ($placement) => 'M'.$placement->week?->week_number)->unique()->implode(', '),
+                    $sourceTrace,
+                ]);
+                if (isset($rppCatalogCells[$material->id])) {
+                    $sheet->getCell("A{$row}")->getHyperlink()
+                        ->setUrl("#'RPP Semester {$plan->semester}'!{$rppCatalogCells[$material->id]}")
+                        ->setTooltip('Kembali ke penggunaan pertama pada RPP');
+                    $sheet->getStyle("A{$row}")->getFont()->setColor(new Color('0563C1'))->setUnderline(true);
+                }
+                $sheet->getRowDimension($row)->setRowHeight(46);
+                $row++;
+            }
+        }
+
+        $lastRow = max(4, $row - 1);
+        $sheet->getStyle("A4:O{$lastRow}")->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN)->setColor(new Color(self::BORDER));
+        $sheet->getStyle("A2:O{$lastRow}")->getAlignment()->setVertical(Alignment::VERTICAL_TOP)->setWrapText(true);
+        $sheet->getStyle('A2:O2')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_LEFT);
+        foreach ([
+            'A' => 20, 'B' => 18, 'C' => 18, 'D' => 22, 'E' => 22, 'F' => 24, 'G' => 38, 'H' => 42,
+            'I' => 46, 'J' => 32, 'K' => 16, 'L' => 20, 'M' => 16, 'N' => 20, 'O' => 50,
+        ] as $column => $width) {
+            $sheet->getColumnDimension($column)->setWidth($width);
+        }
+        $sheet->freezePane('A5');
+        $sheet->setAutoFilter("A4:O{$lastRow}");
+        $sheet->getPageSetup()->setOrientation(PageSetup::ORIENTATION_LANDSCAPE)->setFitToWidth(1)->setFitToHeight(0);
+
+        return $anchors;
+    }
+
+    private function materialSheetName(Level $level): string
+    {
+        $name = preg_replace('#[\\\\/?*\[\]:]+#u', '-', 'Materi '.$level->code) ?: 'Materi';
+
+        return mb_substr($name, 0, 31);
+    }
+
+    private function writeMatrixHeaders(Worksheet $sheet, $columns, int $startColumn, int $row): void
     {
         $cursor = $startColumn;
-        foreach ($this->matrix->headerGroups($columns, $field) as $group) {
+        foreach ($this->catalog->headerTree($columns) as $aspect) {
             $start = Coordinate::stringFromColumnIndex($cursor);
-            $end = Coordinate::stringFromColumnIndex($cursor + $group['span'] - 1);
+            $end = Coordinate::stringFromColumnIndex($cursor + $aspect['span'] - 1);
             if ($start !== $end) {
                 $sheet->mergeCells("{$start}{$row}:{$end}{$row}");
             }
-            $sheet->setCellValue("{$start}{$row}", $group['label']);
-            $cursor += $group['span'];
+            $sheet->setCellValue("{$start}{$row}", $aspect['label']);
+            $cursor += $aspect['span'];
+        }
+
+        $cursor = $startColumn;
+        foreach ($this->catalog->headerTree($columns) as $aspect) {
+            foreach ($aspect['subaspects'] as $subaspect) {
+                $start = Coordinate::stringFromColumnIndex($cursor);
+                $end = Coordinate::stringFromColumnIndex($cursor + $subaspect['span'] - 1);
+                if ($start !== $end) {
+                    $sheet->mergeCells("{$start}".($row + 1).":{$end}".($row + 1));
+                }
+                $sheet->setCellValue("{$start}".($row + 1), $subaspect['label']);
+                $cursor += $subaspect['span'];
+            }
         }
     }
 

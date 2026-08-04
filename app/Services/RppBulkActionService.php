@@ -12,7 +12,11 @@ use Illuminate\Validation\ValidationException;
 
 class RppBulkActionService
 {
-    public function __construct(private readonly RppPlanner $planner, private readonly RppMatrixPresetService $presets) {}
+    public function __construct(
+        private readonly RppPlanner $planner,
+        private readonly RppMatrixPresetService $presets,
+        private readonly RppMaterialCatalogService $catalog,
+    ) {}
 
     public function updatePlacements(RppPlan $plan, array $placementIds, string $action, ?int $weekId, string $reason, ?int $userId): int
     {
@@ -92,10 +96,12 @@ class RppBulkActionService
                 if (! $column || ! $column->is_active) {
                     throw ValidationException::withMessages(['selection' => "Materi {$item->stable_code} belum dipetakan ke kolom matriks aktif."]);
                 }
-                RppWeekItem::query()->create([
+                $placement = RppWeekItem::query()->create([
                     'rpp_plan_id' => $lockedPlan->id,
                     'calendar_week_id' => $week->id,
                     'syllabus_item_id' => $item->id,
+                    'source_fingerprint' => 'syllabus:'.$item->id,
+                    'occurrence_no' => 1,
                     'rpp_matrix_column_id' => $column->id,
                     'strand' => $column->label,
                     'content' => $item->title,
@@ -105,6 +111,7 @@ class RppBulkActionService
                     'lock_version' => 1,
                     'last_edited_by' => $userId,
                 ]);
+                $this->catalog->attachPlacement($placement);
             }
 
             $this->finish($lockedPlan, $userId, $activityAction, [

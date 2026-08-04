@@ -11,6 +11,8 @@ use Illuminate\Validation\ValidationException;
 
 class RppProgressService
 {
+    public function __construct(private readonly RppMaterialCatalogService $catalog) {}
+
     public function ensureDefaults(RppPlan $plan): void
     {
         $items = $plan->level->syllabusItems()
@@ -203,11 +205,13 @@ class RppProgressService
                 $content = $this->content($target, $review, $review, true);
             }
 
-            RppWeekItem::query()->updateOrCreate(
+            $placement = RppWeekItem::query()->updateOrCreate(
                 [
                     'rpp_plan_id' => $plan->id,
                     'calendar_week_id' => $week->id,
                     'syllabus_item_id' => $target->syllabus_item_id,
+                    'source_fingerprint' => 'syllabus:'.$target->syllabus_item_id,
+                    'occurrence_no' => 1,
                 ],
                 [
                     'rpp_progress_target_id' => $target->id,
@@ -222,6 +226,7 @@ class RppProgressService
                     'position' => 1,
                 ]
             );
+            $this->catalog->attachPlacement($placement);
         }
     }
 

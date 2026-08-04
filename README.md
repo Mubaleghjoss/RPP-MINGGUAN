@@ -11,7 +11,8 @@ Aplikasi Laravel 12 untuk menjaga alur **GGB → Silabus → RPP global mingguan
 - Planner deterministik hanya pada minggu efektif dan mempertahankan materi terkunci.
 - Preview interaktif per jenjang–semester dengan target progres, edit manual berjejak, dan penyusunan otomatis.
 - Matriks RPP seperti lembar kerja sekolah: baris mingguan, header GGB bertingkat, fokus karakter bulanan, dan preset kolom yang dapat diatur Admin.
-- Ekspor terpilih menghasilkan dua sheet: `Ringkasan` dan `RPP Semester 1/2` tanpa memerlukan template Excel lokal.
+- Ekspor terpilih menghasilkan tiga sheet: `Ringkasan`, `RPP Semester 1/2`, dan `Materi {Kelas}`. Kamus materi memuat dua semester serta terhubung ke sel RPP melalui hyperlink internal.
+- Setiap sel minggu efektif menyediakan pemilih materi GGB/Silabus. Materi yang sudah terpasang dapat dipilih kembali sebagai penguatan manual terkunci.
 
 ## Data sumber dan file lokal
 

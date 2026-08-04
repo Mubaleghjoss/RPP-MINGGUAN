@@ -84,16 +84,26 @@ class RppMatrixService
 
     public function sourceNote(RppWeekItem $item): string
     {
-        $item->loadMissing(['syllabusItem.document', 'syllabusItem.ggbItems.document']);
+        $item->loadMissing([
+            'materials.ggbItem.document',
+            'materials.ggbItem.syllabusItems.document',
+            'materials.syllabusItem.document',
+            'syllabusItem.document',
+            'syllabusItem.ggbItems.document',
+        ]);
         $syllabus = $item->syllabusItem;
-        $lines = [
-            $syllabus->stable_code,
-            'Silabus: '.$syllabus->document->title.' hlm. '.$syllabus->source_page,
-        ];
-        foreach ($syllabus->ggbItems->take(4) as $ggb) {
+        $codes = $item->materials->sortBy('sort_order')->pluck('display_code')->implode(', ');
+        $lines = [$codes !== '' ? 'Kode materi: '.$codes : 'Kode materi belum tersedia'];
+        if ($syllabus) {
+            $lines[] = 'Silabus: '.$syllabus->stable_code.' — '.$syllabus->document->title.' hlm. '.$syllabus->source_page;
+        }
+        $ggbItems = $item->materials->pluck('ggbItem')->filter()
+            ->merge($syllabus?->ggbItems ?? collect())->unique('id')->take(8);
+        foreach ($ggbItems as $ggb) {
             $lines[] = 'GGB: '.$ggb->stable_code.' — '.$ggb->title.' (hlm. '.$ggb->source_page.')';
         }
-        $lines[] = 'Status: '.($item->source === 'manual' ? 'Manual terkunci' : 'Otomatis');
+        $lines[] = 'Status: '.($item->source === 'manual' ? 'Manual terkunci' : 'Otomatis')
+            .($item->progress_kind === 'penguatan' ? ' · Penguatan' : '');
 
         return implode("\n", $lines);
     }

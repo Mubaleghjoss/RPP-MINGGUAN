@@ -30,6 +30,11 @@ class RppMatrixColumn extends Model
         return $this->hasMany(RppWeekItem::class);
     }
 
+    public function catalogItems()
+    {
+        return $this->hasMany(RppMaterialCatalogItem::class);
+    }
+
     public function editor()
     {
         return $this->belongsTo(User::class, 'last_edited_by');

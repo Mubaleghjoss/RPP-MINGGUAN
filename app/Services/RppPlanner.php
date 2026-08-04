@@ -16,6 +16,7 @@ class RppPlanner
         private readonly RppMatrixPresetService $presets,
         private readonly RppSchedulePatternService $patterns,
         private readonly RppMatrixService $matrix,
+        private readonly RppMaterialCatalogService $catalog,
     ) {}
 
     public function scheduleOne(RppPlan $plan, int $syllabusItemId, ?int $userId): RppWeekItem
@@ -93,6 +94,8 @@ class RppPlanner
                 'rpp_plan_id' => $lockedPlan->id,
                 'calendar_week_id' => $week->id,
                 'syllabus_item_id' => $item->id,
+                'source_fingerprint' => 'syllabus:'.$item->id,
+                'occurrence_no' => 1,
                 'rpp_matrix_column_id' => $column->id,
                 'strand' => $strand,
                 'content' => $item->title,
@@ -102,6 +105,7 @@ class RppPlanner
                 'lock_version' => 0,
                 'last_edited_by' => $userId,
             ]);
+            $this->catalog->attachPlacement($placement);
 
             $this->refreshCoverage($lockedPlan);
             $lockedPlan->update(['status' => 'draft', 'validated_at' => null]);
@@ -123,12 +127,14 @@ class RppPlanner
         });
     }
 
-    public function generate(RppPlan $plan): RppPlan
+    public function generate(RppPlan $plan, bool $syncCatalog = true): RppPlan
     {
-        return DB::transaction(function () use ($plan) {
+        return DB::transaction(function () use ($plan, $syncCatalog) {
             // Selalu muat ulang agar perubahan manual/kunci dari request lain
             // menjadi sumber kebenaran saat penyusunan ulang.
-            $this->presets->syncLevel($plan->level);
+            if ($syncCatalog) {
+                $this->catalog->syncLevel($plan->level);
+            }
             $plan->load(['level.syllabusItems.matrixMapping.column', 'level.syllabusItems.ggbItems', 'academicYear.weeks', 'items.week', 'progressTargets.syllabusItem']);
             $this->progress->ensureDefaults($plan);
             $plan->load('progressTargets.syllabusItem');
@@ -221,11 +227,13 @@ class RppPlanner
                 if ($existingLocked) {
                     continue;
                 }
-                RppWeekItem::query()->updateOrCreate(
+                $placement = RppWeekItem::query()->updateOrCreate(
                     [
                         'rpp_plan_id' => $plan->id,
                         'calendar_week_id' => $assignment['week']->id,
                         'syllabus_item_id' => $item->id,
+                        'source_fingerprint' => 'syllabus:'.$item->id,
+                        'occurrence_no' => 1,
                     ],
                     [
                         'rpp_matrix_column_id' => $column->id,
@@ -234,6 +242,7 @@ class RppPlanner
                         'source' => 'auto', 'is_locked' => false, 'position' => $occurrence + 1,
                     ]
                 );
+                $this->catalog->attachPlacement($placement);
             }
         }
     }
@@ -256,7 +265,9 @@ class RppPlanner
 
     public function generateAll(): void
     {
-        RppPlan::query()->with(['level.syllabusItems', 'academicYear.weeks', 'items', 'progressTargets'])->each(fn (RppPlan $plan) => $this->generate($plan));
+        $this->catalog->syncAll();
+        RppPlan::query()->with(['level.syllabusItems', 'academicYear.weeks', 'items', 'progressTargets'])
+            ->each(fn (RppPlan $plan) => $this->generate($plan, false));
     }
 
     public function validate(RppPlan $plan): bool

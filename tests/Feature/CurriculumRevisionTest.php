@@ -73,6 +73,7 @@ class CurriculumRevisionTest extends TestCase
         $this->placement = RppWeekItem::query()->create([
             'rpp_plan_id' => $this->plan->id, 'calendar_week_id' => $this->effective->id,
             'syllabus_item_id' => $this->syllabus->id, 'strand' => 'Faqih', 'content' => 'Materi silabus',
+            'source_fingerprint' => 'syllabus:'.$this->syllabus->id, 'occurrence_no' => 1,
             'source' => 'auto', 'is_locked' => false, 'position' => 1,
         ]);
     }

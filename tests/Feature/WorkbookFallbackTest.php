@@ -15,7 +15,7 @@ class WorkbookFallbackTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_selected_semester_export_contains_only_summary_and_rpp_sheets(): void
+    public function test_selected_semester_export_contains_summary_rpp_and_two_semester_material_catalog(): void
     {
         $this->seed(CurriculumSeeder::class);
         $destination = storage_path('framework/testing/rpp-fallback.xlsx');
@@ -25,9 +25,13 @@ class WorkbookFallbackTest extends TestCase
 
         $this->assertFileExists($destination);
         $workbook = IOFactory::load($destination);
-        $this->assertSame(2, $workbook->getSheetCount());
-        $this->assertSame(['Ringkasan', 'RPP Semester 1'], $workbook->getSheetNames());
+        $this->assertSame(3, $workbook->getSheetCount());
+        $this->assertSame(['Ringkasan', 'RPP Semester 1', 'Materi PAUD'], $workbook->getSheetNames());
         $this->assertStringContainsString('PAUD', (string) $workbook->getSheet(0)->getCell('A1')->getValue());
+        $summaryText = collect($workbook->getSheet(0)->toArray())->flatten()->implode('|');
+        $this->assertStringContainsString('Katalog materi', $summaryText);
+        $this->assertStringContainsString('Cakupan GGB', $summaryText);
+        $this->assertStringContainsString('Belum terpasang', $summaryText);
         $this->assertSame(DataType::TYPE_STRING, $workbook->getSheet(0)->getCell('B9')->getDataType());
         $this->assertStringContainsString('1–22', (string) $workbook->getSheet(0)->getCell('B9')->getValue());
         $rppText = collect($workbook->getSheet(1)->toArray())->flatten()->implode('|');
@@ -37,6 +41,11 @@ class WorkbookFallbackTest extends TestCase
         $this->assertStringContainsString('I. Alim-Faqih', $rppText);
         $this->assertNotEmpty($workbook->getSheet(1)->getMergeCells());
         $this->assertTrue(collect($workbook->getSheet(1)->getComments())->contains(fn ($comment) => str_contains($comment->getText()->getPlainText(), 'Silabus:')));
+        $this->assertTrue(collect($workbook->getSheet(1)->getHyperlinkCollection())->contains(fn ($link) => str_contains($link->getUrl(), "#'Materi PAUD'!")));
+        $materialText = collect($workbook->getSheet(2)->toArray())->flatten()->implode('|');
+        $this->assertStringContainsString('SEMESTER 1 DAN 2', $materialText);
+        $this->assertStringContainsString('GGB', $materialText);
+        $this->assertTrue(collect($workbook->getSheet(2)->getHyperlinkCollection())->contains(fn ($link) => str_contains($link->getUrl(), "#'RPP Semester 1'!")));
         $workbook->disconnectWorksheets();
         unlink($destination);
     }

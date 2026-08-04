@@ -4,7 +4,9 @@ namespace Tests\Feature;
 
 use App\Livewire\ExportPreview;
 use App\Models\AcademicYear;
+use App\Models\GgbItem;
 use App\Models\Level;
+use App\Models\RppMaterialCatalogItem;
 use App\Models\RppPlan;
 use App\Models\User;
 use App\Services\CurriculumRevisionService;
@@ -30,6 +32,16 @@ class SemesterRppTest extends TestCase
         $this->assertSame(26, AcademicYear::query()->where('is_active', true)->firstOrFail()->weeks()->where('semester', 1)->count());
         $this->assertSame(26, AcademicYear::query()->where('is_active', true)->firstOrFail()->weeks()->where('semester', 2)->count());
         $this->assertSame(0, RppPlan::query()->whereHas('items.week', fn ($query) => $query->whereColumn('calendar_weeks.semester', '!=', 'rpp_plans.semester'))->count());
+        $this->assertSame(
+            GgbItem::query()->whereDoesntHave('children')->count(),
+            RppMaterialCatalogItem::query()->where('source_kind', 'ggb')->count(),
+            'Setiap butir GGB tanpa anak harus tersedia di katalog materi.'
+        );
+        $this->assertSame(
+            RppMaterialCatalogItem::query()->count(),
+            RppMaterialCatalogItem::query()->get(['level_id', 'display_code'])->unique(fn ($item) => $item->level_id.'|'.$item->display_code)->count(),
+            'Kode ringkas harus unik di dalam setiap jenjang.'
+        );
     }
 
     public function test_paud_tilawati_reaches_twenty_two_units_each_semester_and_uses_reinforcement(): void
@@ -95,7 +107,10 @@ class SemesterRppTest extends TestCase
             ->call('selectSemester', 2)
             ->assertSee('RPP PAUD · Semester 2')
             ->assertSee('23–44')
-            ->assertSee('Matriks 26 minggu');
+            ->assertSee('Matriks 26 minggu')
+            ->assertSee('Kembali ke Planner')
+            ->assertSee('Isi Materi')
+            ->assertSee('rpp/'.$paud->id.'?semester=2', false);
 
         $material = $paud->syllabusItems()->where('is_duplicate', false)->whereDoesntHave('progressTargets')->firstOrFail();
         $component

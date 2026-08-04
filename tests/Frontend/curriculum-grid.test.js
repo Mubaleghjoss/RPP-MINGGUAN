@@ -65,8 +65,9 @@ test('matrix drafts can contain placement, focus, and layout domains atomically'
         'rpp:12': { domain: 'rpp', id: 12, version: 2, changes: { content: 'Materi manual' } },
         'month_focus:12': { domain: 'month_focus', id: 12, version: 0, changes: { focus_text: 'Rukun' } },
         'matrix_column:4': { domain: 'matrix_column', id: 4, version: 1, changes: { label: 'Hafalan Surat' } },
+        'material_catalog:9': { domain: 'material_catalog', id: 9, version: 0, changes: { rpp_matrix_column_id: '4' } },
     });
 
-    assert.deepEqual(patches.map((patch) => patch.domain), ['rpp', 'month_focus', 'matrix_column']);
+    assert.deepEqual(patches.map((patch) => patch.domain), ['rpp', 'month_focus', 'matrix_column', 'material_catalog']);
     assert.doesNotThrow(() => JSON.stringify(patches));
 });

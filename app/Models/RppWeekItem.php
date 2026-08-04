@@ -35,6 +35,11 @@ class RppWeekItem extends Model
         return $this->belongsTo(RppMatrixColumn::class, 'rpp_matrix_column_id');
     }
 
+    public function materials()
+    {
+        return $this->belongsToMany(RppMaterialCatalogItem::class, 'rpp_week_item_materials')->withTimestamps();
+    }
+
     public function editor()
     {
         return $this->belongsTo(User::class, 'last_edited_by');

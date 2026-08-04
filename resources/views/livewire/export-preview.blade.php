@@ -5,7 +5,10 @@
             <h1 class="mt-1 text-3xl font-semibold text-balance text-slate-950">RPP {{ $plan->level->name }} · Semester {{ $semester }}</h1>
             <p class="mt-2 max-w-3xl text-pretty text-slate-600">Satu baris mewakili satu minggu. Kolom materi mengikuti pemetaan GGB dan Silabus, sedangkan perubahan manual disimpan sebagai revisi terkunci.</p>
         </div>
-        <a href="{{ route('exports.workbook', ['level' => $plan->level_id, 'semester' => $semester]) }}" class="button-primary">Unduh Excel semester ini</a>
+        <div class="flex flex-wrap gap-2">
+            <a href="{{ route('planner.show', ['level' => $plan->level_id, 'semester' => $semester]) }}" class="button-secondary">Kembali ke Planner</a>
+            <a href="{{ route('exports.workbook', ['level' => $plan->level_id, 'semester' => $semester]) }}" class="button-primary">Unduh Excel semester ini</a>
+        </div>
     </header>
 
     <section class="panel p-4 sm:p-5" aria-label="Pilihan preview">
@@ -26,13 +29,14 @@
     @if($notice)<div class="rounded-xl bg-emerald-50 px-4 py-3 text-sm text-emerald-900 ring-1 ring-emerald-200" role="status">{{ $notice }}</div>@endif
     @if($errorMessage)<div class="rounded-xl bg-red-50 px-4 py-3 text-sm font-medium text-red-900 ring-1 ring-red-200" role="alert">{{ $errorMessage }}</div>@endif
 
-    <section class="grid gap-3 sm:grid-cols-2 xl:grid-cols-6" aria-label="Ringkasan semester">
+    <section class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-7" aria-label="Ringkasan semester">
         <article class="panel p-4"><p class="text-sm text-slate-500">Cakupan</p><p class="metric-number mt-2">{{ number_format((float) $plan->coverage_percent, 1) }}%</p></article>
         <article class="panel p-4"><p class="text-sm text-slate-500">Status</p><p class="mt-2 font-semibold {{ $plan->status === 'validated' ? 'text-emerald-700' : 'text-amber-700' }}">{{ $plan->status === 'validated' ? 'Tervalidasi' : 'Draf' }}</p></article>
         <article class="panel p-4"><p class="text-sm text-slate-500">Kolom materi</p><p class="metric-number mt-2">{{ $columns->count() }}</p></article>
         <article class="panel p-4"><p class="text-sm text-slate-500">Target terukur</p><p class="metric-number mt-2">{{ $targetAchieved }}/{{ $targetTotal }}</p></article>
         <article class="panel p-4"><p class="text-sm text-slate-500">Perlu pola/manual</p><p class="metric-number mt-2">{{ $patternIssues->count() }}</p></article>
         <article class="panel p-4"><p class="text-sm text-slate-500">Konflik pemetaan</p><p class="metric-number mt-2">{{ $conflictCount }}</p><p class="mt-1 text-xs text-slate-500">{{ $unmappedCount }} materi belum dipetakan.</p></article>
+        <article class="panel p-4"><p class="text-sm text-slate-500">Cakupan GGB</p><p class="metric-number mt-2">{{ number_format($ggbCoverage['percent'], 1) }}%</p><p class="mt-1 text-xs text-slate-500">{{ $ggbCoverage['used'] }}/{{ $ggbCoverage['total'] }} butir rinci.</p></article>
     </section>
 
     <section class="panel p-4 shadow-sm lg:sticky lg:top-3 lg:z-30" aria-label="Toolbar preview">
@@ -92,6 +96,22 @@
                     </label>
                 @endforeach
             </div>
+
+            <h3 class="mt-6 font-semibold text-slate-950">Katalog GGB belum dipetakan</h3>
+            <p class="mt-1 text-sm text-slate-600">Butir ini tetap masuk kamus Excel, tetapi harus dipetakan sebelum dapat dipilih dari sel RPP.</p>
+            <div class="mt-3 grid max-h-[420px] gap-2 overflow-y-auto pr-1 lg:grid-cols-2">
+                @forelse($unmappedCatalog as $material)
+                    <label class="grid gap-2 rounded-xl border border-amber-200 bg-amber-50/40 p-3 text-sm" wire:key="catalog-map-{{ $material->id }}">
+                        <span><span class="font-mono text-xs font-semibold text-amber-800">{{ $material->display_code }}</span><span class="mt-1 block font-semibold text-slate-900">{{ $material->title }}</span><span class="mt-1 block text-xs text-slate-500">{{ $material->source_kind === 'ggb' ? 'GGB' : 'Silabus' }}</span></span>
+                        <select data-grid-cell data-domain="material_catalog" data-id="{{ $material->id }}" data-version="{{ $material->lock_version }}" data-field="rpp_matrix_column_id" data-original="" class="min-h-11 rounded-xl border border-slate-300 bg-white px-3">
+                            <option value="">Pilih kolom RPP</option>
+                            @foreach($layoutColumns->where('is_active', true) as $option)<option value="{{ $option->id }}">{{ $option->aspect_label }} · {{ $option->label }}</option>@endforeach
+                        </select>
+                    </label>
+                @empty
+                    <p class="rounded-xl bg-emerald-50 p-4 text-sm font-medium text-emerald-800 ring-1 ring-emerald-200">Semua butir katalog sudah dipetakan.</p>
+                @endforelse
+            </div>
         </div>
     </details>
 
@@ -125,9 +145,14 @@
                     <div class="border-b border-slate-300 bg-emerald-950 px-4 py-3 text-center text-white"><p class="text-xs font-semibold uppercase tracking-wide">Rencana Program Pembelajaran</p><p class="mt-1 font-semibold">{{ strtoupper($plan->level->name) }} · SEMESTER {{ $semester }} · TRIWULAN {{ (($semester - 1) * 2) + $trimesterIndex + 1 }}</p></div>
                     <div class="matrix-scroll overflow-x-auto">
                         <table class="rpp-matrix-table" data-grid-table>
+                            <colgroup>
+                                <col class="matrix-col-month"><col class="matrix-col-focus"><col class="matrix-col-week"><col class="matrix-col-date">
+                                @foreach($columns as $column)<col style="width: {{ $column->width }}ch; min-width: {{ $column->width }}ch">@endforeach
+                                <col class="matrix-col-sign">
+                            </colgroup>
                             <thead>
-                                <tr><th rowspan="3" class="matrix-sticky matrix-month">Bulan</th><th rowspan="3" class="matrix-sticky matrix-focus">Fokus 29 Karakter Luhur</th><th rowspan="3" class="matrix-sticky matrix-week">Pekan</th><th rowspan="3" class="matrix-sticky matrix-date">Tanggal</th>@foreach($aspectGroups as $group)<th colspan="{{ $group['span'] }}" class="matrix-aspect">{{ $group['label'] }}</th>@endforeach<th rowspan="3" class="matrix-sign">Paraf Pengajar</th></tr>
-                                <tr>@foreach($subaspectGroups as $group)<th colspan="{{ $group['span'] }}" class="matrix-subaspect">{{ $group['label'] }}</th>@endforeach</tr>
+                                <tr class="matrix-header-aspect"><th rowspan="3" class="matrix-sticky matrix-month">Bulan</th><th rowspan="3" class="matrix-sticky matrix-focus">Fokus 29 Karakter Luhur</th><th rowspan="3" class="matrix-sticky matrix-week">Pekan</th><th rowspan="3" class="matrix-sticky matrix-date">Tanggal</th>@foreach($headerTree as $aspect)<th colspan="{{ $aspect['span'] }}" class="matrix-aspect">{{ $aspect['label'] }}</th>@endforeach<th rowspan="3" class="matrix-sign">Paraf Pengajar</th></tr>
+                                <tr class="matrix-header-subaspect">@foreach($headerTree as $aspect)@foreach($aspect['subaspects'] as $subaspect)<th colspan="{{ $subaspect['span'] }}" class="matrix-subaspect">{{ $subaspect['label'] }}</th>@endforeach @endforeach</tr>
                                 <tr>@foreach($columns as $column)<th style="min-width: {{ $column->width }}ch">{{ $column->label }}</th>@endforeach</tr>
                             </thead>
                             <tbody>
@@ -148,8 +173,10 @@
                                                 @php($cellItems = collect($itemsByCell->get($week->id.':'.$column->id, [])))
                                                 <td class="matrix-content-cell">
                                                     @forelse($cellItems as $item)
-                                                        <button type="button" @click='openMatrixItem(@js(["id"=>$item->id,"version"=>$item->lock_version,"calendar_week_id"=>$item->calendar_week_id,"rpp_matrix_column_id"=>$item->rpp_matrix_column_id,"content"=>$item->content,"progress_start"=>$item->progress_start,"progress_end"=>$item->progress_end,"progress_kind"=>$item->progress_kind,"position"=>$item->position,"is_locked"=>$item->is_locked?1:0,"source"=>$item->source,"stable_code"=>$item->syllabusItem->stable_code,"source_note"=>app(\App\Services\RppMatrixService::class)->sourceNote($item)]))' @keydown.f2.prevent="$el.click()" class="matrix-item-button" title="Edit {{ $item->syllabusItem->stable_code }}"><span>{{ $item->content }}</span>@if($item->progress_start)<small>{{ $item->progress_kind === 'penguatan' ? 'Penguatan ' : '' }}{{ $item->progress_start }}–{{ $item->progress_end }}</small>@endif</button>
-                                                    @empty<span class="text-slate-300">—</span>@endforelse
+                                                        @php($sourceCode = $item->syllabusItem?->stable_code ?? $item->materials->first()?->ggbItem?->stable_code ?? 'Materi manual')
+                                                        <button type="button" @click='openMatrixItem(@js(["id"=>$item->id,"version"=>$item->lock_version,"calendar_week_id"=>$item->calendar_week_id,"rpp_matrix_column_id"=>$item->rpp_matrix_column_id,"content"=>$item->content,"progress_start"=>$item->progress_start,"progress_end"=>$item->progress_end,"progress_kind"=>$item->progress_kind,"position"=>$item->position,"is_locked"=>$item->is_locked?1:0,"source"=>$item->source,"stable_code"=>$sourceCode,"source_note"=>app(\App\Services\RppMatrixService::class)->sourceNote($item)]))' @keydown.f2.prevent="$el.click()" class="matrix-item-button" title="Edit {{ $sourceCode }}"><span>{{ app(\App\Services\RppMaterialCatalogService::class)->placementLabel($item) }}</span>@if($item->progress_start)<small>{{ $item->progress_kind === 'penguatan' ? 'Penguatan ' : '' }}{{ $item->progress_start }}–{{ $item->progress_end }}</small>@elseif($item->progress_kind === 'penguatan')<small>Penguatan</small>@endif</button>
+                                                    @empty@endforelse
+                                                    <button type="button" wire:click="openMaterialPicker({{ $week->id }}, {{ $column->id }})" class="matrix-fill-button" aria-label="Isi materi {{ $column->label }} pada minggu {{ $week->week_number }}">+ Isi Materi</button>
                                                 </td>
                                             @endforeach
                                         @endif
@@ -174,8 +201,7 @@
                     @if($week->is_effective)
                         <div class="mt-4 space-y-4">
                             @foreach($columns->groupBy('aspect_label') as $aspect => $aspectColumns)
-                                @php($hasContent = $aspectColumns->contains(fn($column) => collect($itemsByCell->get($week->id.':'.$column->id, []))->isNotEmpty()))
-                                @if($hasContent)<section><h4 class="text-xs font-semibold uppercase tracking-wide text-slate-500">{{ $aspect }}</h4><div class="mt-2 grid gap-2">@foreach($aspectColumns as $column)@php($cellItems = collect($itemsByCell->get($week->id.':'.$column->id, [])))@foreach($cellItems as $item)<button type="button" @click='openMatrixItem(@js(["id"=>$item->id,"version"=>$item->lock_version,"calendar_week_id"=>$item->calendar_week_id,"rpp_matrix_column_id"=>$item->rpp_matrix_column_id,"content"=>$item->content,"progress_start"=>$item->progress_start,"progress_end"=>$item->progress_end,"progress_kind"=>$item->progress_kind,"position"=>$item->position,"is_locked"=>$item->is_locked?1:0,"source"=>$item->source,"stable_code"=>$item->syllabusItem->stable_code,"source_note"=>app(\App\Services\RppMatrixService::class)->sourceNote($item)]))' class="flex min-h-11 w-full items-start justify-between gap-3 rounded-xl bg-slate-50 p-3 text-left ring-1 ring-slate-200"><span><span class="block text-xs font-semibold text-emerald-800">{{ $column->label }}</span><span class="mt-1 block text-sm text-slate-900">{{ $item->content }}</span></span><span class="text-xs font-semibold text-emerald-700">Edit</span></button>@endforeach @endforeach</div></section>@endif
+                                <section><h4 class="text-xs font-semibold uppercase tracking-wide text-slate-500">{{ $aspect }}</h4><div class="mt-2 grid gap-3">@foreach($aspectColumns as $column)@php($cellItems = collect($itemsByCell->get($week->id.':'.$column->id, [])))<div class="rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200"><div class="flex items-center justify-between gap-3"><h5 class="text-xs font-semibold text-emerald-800">{{ $column->label }}</h5><button type="button" wire:click="openMaterialPicker({{ $week->id }}, {{ $column->id }})" class="min-h-11 rounded-lg px-3 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">+ Isi Materi</button></div><div class="mt-2 grid gap-2">@foreach($cellItems as $item)@php($sourceCode = $item->syllabusItem?->stable_code ?? $item->materials->first()?->ggbItem?->stable_code ?? 'Materi manual')<button type="button" @click='openMatrixItem(@js(["id"=>$item->id,"version"=>$item->lock_version,"calendar_week_id"=>$item->calendar_week_id,"rpp_matrix_column_id"=>$item->rpp_matrix_column_id,"content"=>$item->content,"progress_start"=>$item->progress_start,"progress_end"=>$item->progress_end,"progress_kind"=>$item->progress_kind,"position"=>$item->position,"is_locked"=>$item->is_locked?1:0,"source"=>$item->source,"stable_code"=>$sourceCode,"source_note"=>app(\App\Services\RppMatrixService::class)->sourceNote($item)]))' class="flex min-h-11 w-full items-start justify-between gap-3 rounded-lg bg-white p-3 text-left ring-1 ring-slate-200"><span class="text-sm text-slate-900">{{ app(\App\Services\RppMaterialCatalogService::class)->placementLabel($item) }}</span><span class="text-xs font-semibold text-emerald-700">Edit</span></button>@endforeach</div></div>@endforeach</div></section>
                             @endforeach
                         </div>
                     @else<p class="mt-3 text-sm text-slate-600">{{ $week->label ?: 'Minggu ini tidak menerima materi.' }}</p>@endif
@@ -183,6 +209,42 @@
             @endforeach
         </div>
     </section>
+
+    @if($pickerWeekId && $pickerColumnId)
+        <div class="fixed inset-0 z-[60]" role="dialog" aria-modal="true" aria-labelledby="material-picker-title" x-on:keydown.escape.window="$wire.closeMaterialPicker()" x-init="$nextTick(() => $refs.materialSearch.focus())">
+            <button type="button" wire:click="closeMaterialPicker" tabindex="-1" class="absolute inset-0 h-full w-full cursor-default bg-slate-950/45" aria-label="Tutup pemilih materi"></button>
+            <aside class="absolute inset-y-0 right-0 flex w-full max-w-2xl flex-col bg-white shadow-2xl">
+                <div class="border-b border-slate-200 p-5 sm:p-6">
+                    <div class="flex items-start justify-between gap-4"><div><p class="text-sm font-semibold text-emerald-700">{{ $pickerColumn?->aspect_label }} · {{ $pickerColumn?->label }}</p><h2 id="material-picker-title" class="mt-1 text-xl font-semibold text-slate-950">Isi materi minggu ini</h2><p class="mt-1 text-sm text-slate-600">Materi yang sudah digunakan tetap dapat dipilih sebagai penguatan.</p></div><button type="button" wire:click="closeMaterialPicker" class="button-secondary">Tutup</button></div>
+                    <label class="mt-4 grid gap-1 text-sm font-medium text-slate-700">Cari kode atau judul<input x-ref="materialSearch" wire:model.live.debounce.250ms="pickerSearch" type="search" class="min-h-11 rounded-xl border border-slate-300 px-3" placeholder="Contoh: Adab 01 atau salam"></label>
+                    <div class="mt-3 flex flex-wrap gap-2" aria-label="Filter status materi">
+                        @foreach(['all' => 'Semua', 'unused' => 'Belum Masuk', 'used' => 'Sudah Terpasang', 'week' => 'Minggu Ini', 'unmapped' => 'Belum Dipetakan'] as $value => $label)
+                            <button type="button" wire:click="$set('pickerStatus', '{{ $value }}')" @class(['min-h-11 rounded-xl px-3 text-sm font-semibold ring-1 transition-colors duration-150', 'bg-emerald-700 text-white ring-emerald-700' => $pickerStatus === $value, 'bg-white text-slate-700 ring-slate-300 hover:bg-slate-50' => $pickerStatus !== $value]) aria-pressed="{{ $pickerStatus === $value ? 'true' : 'false' }}">{{ $label }}</button>
+                        @endforeach
+                    </div>
+                </div>
+                <div class="flex-1 overflow-y-auto p-4 sm:p-5">
+                    <div class="grid gap-3">
+                        @forelse($pickerMaterials as $material)
+                            @php($used = $material->placements->isNotEmpty())
+                            @php($inWeek = $material->placements->contains('calendar_week_id', $pickerWeekId))
+                            @php($disabled = ! $material->rpp_matrix_column_id || $material->mapping_status === 'unmapped')
+                            <label class="flex gap-3 rounded-xl border border-slate-200 p-4 {{ $disabled ? 'bg-slate-50 opacity-70' : 'bg-white hover:border-emerald-300' }}" wire:key="picker-material-{{ $material->id }}">
+                                <span class="flex size-11 shrink-0 items-center justify-center"><input wire:model.live="pickerSelected" type="checkbox" value="{{ $material->id }}" class="size-5 rounded border-slate-300 text-emerald-700" @disabled($disabled) aria-label="Pilih {{ $material->display_code }}"></span>
+                                <span class="min-w-0 flex-1"><span class="flex flex-wrap items-center gap-2"><strong class="font-mono text-sm text-emerald-800">{{ $material->display_code }}</strong>@if($inWeek)<span class="status status-warning">Minggu ini</span>@elseif($used)<span class="status status-neutral">Sudah terpasang</span>@else<span class="status status-success">Belum masuk</span>@endif @if($disabled)<span class="status status-danger">Belum dipetakan</span>@endif</span><span class="mt-1 block font-semibold text-slate-950">{{ $material->title }}</span>
+                                    @if($material->ggbItem)<span class="mt-2 block text-xs leading-5 text-slate-600">GGB · {{ $material->ggbItem->stable_code }} · hlm. {{ $material->ggbItem->source_page }}@if($material->ggbItem->syllabusItems->isNotEmpty())<br>Silabus: {{ $material->ggbItem->syllabusItems->pluck('title')->take(3)->implode('; ') }}@endif</span>@elseif($material->syllabusItem)<span class="mt-2 block text-xs leading-5 text-slate-600">Silabus tambahan · {{ $material->syllabusItem->stable_code }} · hlm. {{ $material->syllabusItem->source_page }}</span>@endif
+                                    @if($used)<span class="mt-2 block text-xs font-medium text-slate-500">Dipakai: {{ $material->placements->sortBy(fn($placement) => $placement->week?->week_number)->map(fn($placement) => 'M'.$placement->week?->week_number)->implode(', ') }}</span>@endif
+                                </span>
+                            </label>
+                        @empty
+                            <div class="rounded-xl bg-slate-50 p-6 text-center text-sm text-slate-600 ring-1 ring-slate-200">Tidak ada materi yang cocok dengan filter ini.</div>
+                        @endforelse
+                    </div>
+                </div>
+                <div class="border-t border-slate-200 bg-white p-4 sm:p-5"><label class="grid gap-1 text-sm font-medium text-slate-700">Alasan penambahan<input wire:model="pickerReason" type="text" class="min-h-11 rounded-xl border border-slate-300 px-3" placeholder="Minimal 5 karakter"></label>@if($errorMessage)<p class="mt-2 text-sm font-medium text-red-700" role="alert">{{ $errorMessage }}</p>@endif<div class="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"><span class="text-sm font-medium text-slate-600"><span class="font-mono tabular-nums">{{ count($pickerSelected) }}</span> materi dipilih</span><button type="button" wire:click="addSelectedMaterials" wire:loading.attr="disabled" wire:target="addSelectedMaterials" class="button-primary" @disabled(count($pickerSelected) === 0)><span wire:loading.remove wire:target="addSelectedMaterials">Tambahkan & Kunci</span><span wire:loading wire:target="addSelectedMaterials">Menambahkan…</span></button></div></div>
+            </aside>
+        </div>
+    @endif
 
     <div x-cloak x-show="editorOpen" x-on:keydown.escape.window="closeMatrixEditor()" class="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label="Editor materi RPP">
         <button type="button" @click="closeMatrixEditor()" class="absolute inset-0 h-full w-full cursor-default bg-slate-950/45" aria-label="Tutup editor"></button>

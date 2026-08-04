@@ -66,6 +66,7 @@ class PlannerBulkActionTest extends TestCase
         $this->placement = RppWeekItem::query()->create([
             'rpp_plan_id' => $this->plan->id, 'calendar_week_id' => $this->weekOne->id,
             'syllabus_item_id' => $this->scheduled->id, 'strand' => 'Faqih', 'content' => $this->scheduled->title,
+            'source_fingerprint' => 'syllabus:'.$this->scheduled->id, 'occurrence_no' => 1,
             'source' => 'auto', 'is_locked' => false, 'position' => 1,
         ]);
 
@@ -76,6 +77,7 @@ class PlannerBulkActionTest extends TestCase
         $this->foreignPlacement = RppWeekItem::query()->create([
             'rpp_plan_id' => $foreignPlan->id, 'calendar_week_id' => $this->weekOne->id,
             'syllabus_item_id' => $foreignSyllabus->id, 'strand' => 'Faqih', 'content' => 'Materi asing',
+            'source_fingerprint' => 'syllabus:'.$foreignSyllabus->id, 'occurrence_no' => 1,
             'source' => 'auto', 'is_locked' => false, 'position' => 1,
         ]);
     }
@@ -89,6 +91,8 @@ class PlannerBulkActionTest extends TestCase
             ->assertSee('Materi belum dijadwalkan')
             ->assertSee('Materi siap')
             ->assertSee('Materi perlu alokasi')
+            ->assertSee('Lihat Preview RPP')
+            ->assertSee('ekspor?level='.$this->level->id.'&amp;semester=1', false)
             ->assertDontSee('S4')
             ->assertSee(route('planner.show', ['level' => $this->level, 'detail' => 'allocation']).'#planner-detail', false);
 

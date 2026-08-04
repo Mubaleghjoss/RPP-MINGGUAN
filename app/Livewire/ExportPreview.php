@@ -4,6 +4,7 @@ namespace App\Livewire;
 
 use App\Models\AcademicYear;
 use App\Models\Level;
+use App\Models\RppMaterialCatalogItem;
 use App\Models\RppMatrixColumn;
 use App\Models\RppMatrixMapping;
 use App\Models\RppMonthFocus;
@@ -12,6 +13,8 @@ use App\Models\RppProgressTarget;
 use App\Models\RppWeekItem;
 use App\Models\SyllabusItem;
 use App\Services\CurriculumRevisionService;
+use App\Services\RppMaterialCatalogService;
+use App\Services\RppMaterialPlacementService;
 use App\Services\RppMatrixPresetService;
 use App\Services\RppMatrixService;
 use App\Services\RppPlanner;
@@ -54,6 +57,18 @@ class ExportPreview extends Component
 
     public string $targetReason = '';
 
+    public ?int $pickerWeekId = null;
+
+    public ?int $pickerColumnId = null;
+
+    public string $pickerSearch = '';
+
+    public string $pickerStatus = 'all';
+
+    public array $pickerSelected = [];
+
+    public string $pickerReason = '';
+
     public function mount(): void
     {
         abort_unless(in_array($this->semester, [1, 2], true), 404);
@@ -67,6 +82,7 @@ class ExportPreview extends Component
         $this->assertLevel();
         $this->resetTargetForm();
         $this->resetMessages();
+        $this->closeMaterialPicker();
     }
 
     public function selectSemester(int $semester): void
@@ -75,6 +91,49 @@ class ExportPreview extends Component
         $this->semester = $semester;
         $this->resetTargetForm();
         $this->resetMessages();
+        $this->closeMaterialPicker();
+    }
+
+    public function openMaterialPicker(int $weekId, int $columnId): void
+    {
+        $plan = $this->plan();
+        abort_unless($plan->academicYear->weeks()->whereKey($weekId)->where('semester', $plan->semester)->where('is_effective', true)->exists(), 422);
+        abort_unless(RppMatrixColumn::query()->whereKey($columnId)->where('level_id', $plan->level_id)->where('is_active', true)->exists(), 422);
+        $this->pickerWeekId = $weekId;
+        $this->pickerColumnId = $columnId;
+        $this->pickerSearch = '';
+        $this->pickerStatus = 'all';
+        $this->pickerSelected = [];
+        $this->pickerReason = '';
+        $this->resetMessages();
+    }
+
+    public function closeMaterialPicker(): void
+    {
+        $this->reset(['pickerWeekId', 'pickerColumnId', 'pickerSearch', 'pickerSelected', 'pickerReason']);
+        $this->pickerStatus = 'all';
+    }
+
+    public function addSelectedMaterials(RppMaterialPlacementService $placements): void
+    {
+        $this->resetMessages();
+        try {
+            $count = $placements->addToCell(
+                $this->plan(),
+                (int) $this->pickerWeekId,
+                (int) $this->pickerColumnId,
+                $this->pickerSelected,
+                $this->pickerReason,
+                Auth::id(),
+            );
+            $this->notice = "{$count} materi ditambahkan dan dikunci. Materi yang pernah digunakan ditandai sebagai penguatan.";
+            $this->closeMaterialPicker();
+        } catch (ValidationException $exception) {
+            $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Materi tidak dapat ditambahkan.';
+        } catch (Throwable $exception) {
+            report($exception);
+            $this->errorMessage = 'Penambahan materi gagal. Tidak ada perubahan yang diterapkan.';
+        }
     }
 
     public function updatedTargetSyllabusId(): void
@@ -155,6 +214,7 @@ class ExportPreview extends Component
                     'month_focus' => RppMonthFocus::query()->where('rpp_plan_id', $plan->id)->whereKey($id)->exists(),
                     'matrix_column' => RppMatrixColumn::query()->where('level_id', $plan->level_id)->whereKey($id)->exists(),
                     'matrix_mapping' => RppMatrixMapping::query()->whereKey($id)->whereHas('syllabusItem', fn ($query) => $query->where('level_id', $plan->level_id))->exists(),
+                    'material_catalog' => RppMaterialCatalogItem::query()->where('level_id', $plan->level_id)->whereKey($id)->exists(),
                     default => false,
                 };
                 abort_unless($valid, 422);
@@ -202,6 +262,7 @@ class ExportPreview extends Component
         RppMatrixPresetService $presets,
         RppMatrixService $matrix,
         RppSchedulePatternService $patterns,
+        RppMaterialCatalogService $catalog,
     ) {
         $presets->syncLevel($this->level());
         $plan = $this->plan()->load([
@@ -211,6 +272,9 @@ class ExportPreview extends Component
             'items.matrixColumn',
             'items.syllabusItem.document',
             'items.syllabusItem.ggbItems.document',
+            'items.materials.ggbItem.document',
+            'items.materials.ggbItem.syllabusItems.document',
+            'items.materials.syllabusItem.document',
             'progressTargets.syllabusItem.document',
         ]);
         $matrix->ensureMonthFocuses($plan);
@@ -241,17 +305,50 @@ class ExportPreview extends Component
         $layoutColumns = $plan->level->matrixColumns()->withCount('mappings')->orderBy('sort_order')->orderBy('id')->get();
         $layoutMappings = $plan->level->syllabusItems()->where('is_duplicate', false)->with(['matrixMapping.column'])->orderBy('sort_order')->get();
         $unmappedCount = $layoutMappings->filter(fn ($item) => ! $item->matrixMapping)->count();
+        $unmappedCatalog = RppMaterialCatalogItem::query()->where('level_id', $plan->level_id)
+            ->where(fn ($query) => $query->whereNull('rpp_matrix_column_id')->orWhere('mapping_status', 'unmapped'))
+            ->with(['ggbItem', 'syllabusItem'])->orderBy('sort_order')->get();
         $patternIssues = $layoutMappings
             ->whereIn('semester_scope', [(string) $this->semester, 'both'])
             ->filter(fn ($item) => in_array($item->schedule_pattern, ['unknown', 'tentative'], true) && ! $plan->items->contains('syllabus_item_id', $item->id));
+        $ggbCoverage = $catalog->coverage($plan);
+        $pickerMaterials = collect();
+        $pickerColumn = null;
+        if ($this->pickerWeekId && $this->pickerColumnId) {
+            $pickerColumn = $columns->firstWhere('id', $this->pickerColumnId);
+            $pickerQuery = RppMaterialCatalogItem::query()->where('level_id', $plan->level_id)
+                ->whereIn('semester_scope', [(string) $plan->semester, 'both'])
+                ->with([
+                    'ggbItem.document',
+                    'ggbItem.syllabusItems.document',
+                    'syllabusItem.document',
+                    'placements' => fn ($query) => $query->where('rpp_plan_id', $plan->id)->with('week'),
+                ]);
+            if ($this->pickerStatus === 'unmapped') {
+                $pickerQuery->where(fn ($query) => $query->whereNull('rpp_matrix_column_id')->orWhere('mapping_status', 'unmapped'));
+            } else {
+                $pickerQuery->where('rpp_matrix_column_id', $this->pickerColumnId);
+            }
+            if (filled($this->pickerSearch)) {
+                $needle = '%'.trim($this->pickerSearch).'%';
+                $pickerQuery->where(fn ($query) => $query->where('display_code', 'like', $needle)->orWhere('title', 'like', $needle));
+            }
+            if ($this->pickerStatus === 'unused') {
+                $pickerQuery->whereDoesntHave('placements', fn ($query) => $query->where('rpp_plan_id', $plan->id));
+            } elseif ($this->pickerStatus === 'used') {
+                $pickerQuery->whereHas('placements', fn ($query) => $query->where('rpp_plan_id', $plan->id));
+            } elseif ($this->pickerStatus === 'week') {
+                $pickerQuery->whereHas('placements', fn ($query) => $query->where('rpp_plan_id', $plan->id)->where('calendar_week_id', $this->pickerWeekId));
+            }
+            $pickerMaterials = $pickerQuery->orderBy('sort_order')->limit(150)->get();
+        }
 
         return view('livewire.export-preview', [
             'levels' => Level::query()->orderBy('sort_order')->get(),
             'plan' => $plan,
             'weeks' => $weeks,
             'columns' => $columns,
-            'aspectGroups' => $matrix->headerGroups($columns, 'aspect_label'),
-            'subaspectGroups' => $matrix->headerGroups($columns, 'subaspect_label'),
+            'headerTree' => $catalog->headerTree($columns),
             'itemsByCell' => $itemsByCell,
             'monthRows' => $matrix->monthRows($weeks, $plan->monthFocuses),
             'trimesterChunks' => $weeks->chunk(13)->values(),
@@ -266,8 +363,12 @@ class ExportPreview extends Component
             'targetAchieved' => $targets->sum(fn ($target) => $target->summary['achieved']),
             'annualTargetTotal' => $annualTargets->sum(fn ($target) => $progress->progressSummary($target)['total']),
             'annualTargetAchieved' => $annualTargets->sum(fn ($target) => $progress->progressSummary($target)['achieved']),
-            'conflictCount' => $unmappedCount + $patternIssues->count(),
+            'conflictCount' => $unmappedCount + $unmappedCatalog->count() + $patternIssues->count(),
             'unmappedCount' => $unmappedCount,
+            'unmappedCatalog' => $unmappedCatalog,
+            'ggbCoverage' => $ggbCoverage,
+            'pickerMaterials' => $pickerMaterials,
+            'pickerColumn' => $pickerColumn,
         ]);
     }
 
