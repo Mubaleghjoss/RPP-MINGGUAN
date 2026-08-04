@@ -46,7 +46,7 @@
             </label>
             <label class="grid gap-1 text-sm font-medium text-slate-700">Status
                 <select wire:model.live="ggbStatus" class="min-h-11 rounded-xl border border-slate-300 bg-white px-3">
-                    <option value="all">Semua materi</option><option value="used">Sudah masuk</option><option value="ready">Siap dijadwalkan</option><option value="semester">Perlu semester</option><option value="mapping">Perlu pemetaan kolom</option><option value="conflict">Konflik ganda</option>
+                    <option value="all">Semua materi</option><option value="used">Sudah masuk</option><option value="ready">Siap dijadwalkan</option><option value="semester">Perlu semester</option><option value="mapping">Perlu Konfirmasi Kolom ({{ $ggbNeedsMappingCount }})</option><option value="conflict">Konflik ganda</option>
                 </select>
             </label>
             <div class="flex flex-wrap gap-2">
@@ -54,6 +54,18 @@
                 <button type="button" wire:click="clearGgbSelection" class="button-secondary">Kosongkan</button>
             </div>
         </div>
+
+        @if($ggbStatus === 'mapping')
+            <div @class(['mt-4 rounded-xl p-4 ring-1', 'bg-amber-50 text-amber-950 ring-amber-300' => $ggbNeedsMappingCount > 0, 'bg-emerald-50 text-emerald-950 ring-emerald-300' => $ggbNeedsMappingCount === 0]) role="status">
+                @if($ggbNeedsMappingCount > 0)
+                    <p class="font-semibold">{{ $ggbNeedsMappingCount }} materi memerlukan konfirmasi kolom RPP.</p>
+                    <p class="mt-1 text-sm leading-6">Centang materi, pilih kolom RPP yang sesuai, isi alasan tindakan minimal 5 karakter, lalu tekan <strong>Konfirmasi pilihan</strong>. {{ $ggbSuggestedColumnCount }} materi sudah mempunyai saran kolom dan {{ $ggbMissingColumnCount }} materi belum mempunyai saran.</p>
+                @else
+                    <p class="font-semibold">Semua kolom RPP sudah dikonfirmasi.</p>
+                    <p class="mt-1 text-sm">Tidak ada materi yang tersisa pada filter ini.</p>
+                @endif
+            </div>
+        @endif
 
         <div class="mt-4 grid gap-3 rounded-xl bg-white p-4 ring-1 ring-slate-200 xl:grid-cols-[140px_minmax(220px,1fr)_minmax(260px,1.4fr)_auto] xl:items-end">
             <label class="grid gap-1 text-sm font-medium text-slate-700">Semester
@@ -89,25 +101,28 @@
                     @php($annualPlacements = $material->placements->filter(fn($placement) => (int) $placement->plan?->academic_year_id === (int) $plan->academic_year_id))
                     @php($needsSemester = $material->source_semester_scope === 'general' && ! $material->semester_confirmed)
                     @php($needsMapping = ! $material->rpp_matrix_column_id || $material->mapping_status !== 'mapped')
-                    @php($materialStatus = $annualPlacements->isNotEmpty() ? 'used' : (($needsSemester && $needsMapping) ? 'conflict' : ($needsSemester ? 'semester' : ($needsMapping ? 'mapping' : 'ready'))))
+                    @php($missingColumn = ! $material->rpp_matrix_column_id)
+                    @php($needsSuggestedConfirmation = ! $missingColumn && $material->mapping_status !== 'mapped')
                     <tr wire:key="ggb-row-{{ $material->id }}">
                         <td class="text-center"><input type="checkbox" wire:model.live="selectedGgb" value="{{ $material->id }}" class="size-5 rounded border-slate-300 text-emerald-700" aria-label="Pilih {{ $material->display_code }}"></td>
                         <td><strong class="font-mono text-xs text-emerald-800">{{ $material->display_code }}</strong><span class="mt-1 block font-semibold text-slate-950">{{ $material->title }}</span></td>
                         <td>{{ $material->ggbItem?->aspect }}<span class="mt-1 block text-xs text-slate-500">{{ $material->ggbItem?->subaspect }}</span></td>
                         <td>{{ $material->semester_confirmed ? 'Semester '.$material->semester_scope : 'Perlu konfirmasi' }}<span class="mt-1 block text-xs text-slate-500">Sumber: {{ $material->source_semester_scope === 'general' ? 'General' : 'Semester '.$material->source_semester_scope }}</span></td>
-                        <td>{{ $material->matrixColumn?->label ?: 'Belum dipetakan' }}</td>
-                        <td>@if($materialStatus === 'used')<span class="status status-success">Sudah Masuk</span>@elseif($materialStatus === 'ready')<span class="status status-success">Siap Dijadwalkan</span>@elseif($materialStatus === 'semester')<span class="status status-warning">Perlu Semester</span>@elseif($materialStatus === 'conflict')<span class="status status-danger">Konflik</span>@else<span class="status status-danger">Perlu Pemetaan</span>@endif</td>
+                        <td>@if($missingColumn)<span class="font-semibold text-red-800">Belum dipetakan</span>@elseif($needsSuggestedConfirmation)<span class="font-semibold text-amber-900">Saran: {{ $material->matrixColumn?->label }}</span><span class="mt-1 block text-xs text-amber-800">Belum dikonfirmasi Admin</span>@else{{ $material->matrixColumn?->label }}@endif</td>
+                        <td><div class="flex flex-wrap gap-1.5">@if($annualPlacements->isNotEmpty())<span class="status status-success">Sudah Masuk</span>@endif @if($needsSemester)<span class="status status-warning">Perlu Semester</span>@endif @if($missingColumn)<span class="status status-danger">Belum Dipetakan</span>@elseif($needsSuggestedConfirmation)<span class="status status-warning">Perlu Konfirmasi Saran</span>@endif @if($annualPlacements->isEmpty() && ! $needsSemester && ! $needsMapping)<span class="status status-success">Siap Dijadwalkan</span>@endif</div></td>
                         <td class="text-xs">{{ $material->ggbItem?->document?->title }}<span class="mt-1 block">Hlm. {{ $material->ggbItem?->source_page }} · {{ $material->ggbItem?->stable_code }}</span></td>
                         <td class="text-xs">{{ $annualPlacements->map(fn($placement) => 'S'.$placement->plan?->semester.' M'.$placement->week?->week_number)->unique()->implode(', ') ?: 'Belum digunakan' }}</td>
                     </tr>
-                @empty<tr><td colspan="8" class="p-8 text-center text-slate-600">Tidak ada materi yang cocok dengan filter.</td></tr>@endforelse
+                @empty<tr><td colspan="8" class="p-8 text-center text-slate-600">{{ $ggbStatus === 'mapping' ? 'Semua kolom RPP sudah dikonfirmasi. Tidak ada materi yang tersisa pada filter ini.' : 'Tidak ada materi yang cocok dengan filter.' }}</td></tr>@endforelse
             </tbody>
         </table>
     </div>
 
     <div class="divide-y divide-slate-200 lg:hidden">
         @foreach($ggbItems ?? [] as $material)
-            <label class="flex gap-3 p-4"><span class="flex size-11 shrink-0 items-center justify-center"><input type="checkbox" wire:model.live="selectedGgb" value="{{ $material->id }}" class="size-5 rounded border-slate-300 text-emerald-700"></span><span class="min-w-0"><strong class="font-mono text-xs text-emerald-800">{{ $material->display_code }}</strong><span class="mt-1 block font-semibold text-slate-950">{{ $material->title }}</span><span class="mt-2 block text-xs leading-5 text-slate-600">{{ $material->matrixColumn?->label ?: 'Belum dipetakan' }} · {{ $material->semester_confirmed ? 'Semester '.$material->semester_scope : 'Perlu semester' }}<br>{{ $material->ggbItem?->stable_code }} · hlm. {{ $material->ggbItem?->source_page }}</span></span></label>
+            @php($mobileMissingColumn = ! $material->rpp_matrix_column_id)
+            @php($mobileNeedsSuggestedConfirmation = ! $mobileMissingColumn && $material->mapping_status !== 'mapped')
+            <label class="flex gap-3 p-4"><span class="flex size-11 shrink-0 items-center justify-center"><input type="checkbox" wire:model.live="selectedGgb" value="{{ $material->id }}" class="size-5 rounded border-slate-300 text-emerald-700" aria-label="Pilih {{ $material->display_code }}"></span><span class="min-w-0"><strong class="font-mono text-xs text-emerald-800">{{ $material->display_code }}</strong><span class="mt-1 block font-semibold text-slate-950">{{ $material->title }}</span><span class="mt-2 block text-xs leading-5 text-slate-600">{{ $mobileMissingColumn ? 'Belum dipetakan' : ($mobileNeedsSuggestedConfirmation ? 'Saran: '.$material->matrixColumn?->label.' · Perlu konfirmasi Admin' : $material->matrixColumn?->label) }} · {{ $material->semester_confirmed ? 'Semester '.$material->semester_scope : 'Perlu semester' }}<br>{{ $material->ggbItem?->stable_code }} · hlm. {{ $material->ggbItem?->source_page }}</span></span></label>
         @endforeach
     </div>
     @if($ggbItems)<div class="border-t border-slate-200 p-4">{{ $ggbItems->links() }}</div>@endif

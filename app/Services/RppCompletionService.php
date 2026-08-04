@@ -31,7 +31,7 @@ class RppCompletionService
             ->where(fn ($query) => $query->whereNotIn('semester_scope', ['1', '2'])->orWhere('semester_confirmed', false))
             ->count();
         $needsMapping = (clone $catalogQuery)
-            ->where(fn ($query) => $query->whereNull('rpp_matrix_column_id')->orWhere('mapping_status', '!=', 'mapped'))
+            ->needsRppColumnConfirmation()
             ->count();
         $confirmationComplete = $ggbTotal > 0 && $needsSemester === 0 && $needsMapping === 0;
         $confirmationBlockers = [];

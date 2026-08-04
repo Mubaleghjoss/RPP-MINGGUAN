@@ -42,6 +42,8 @@ class ExportPreview extends Component
     use InteractsWithPersistentNotifications;
     use WithPagination;
 
+    private const GGB_STATUSES = ['all', 'used', 'ready', 'semester', 'mapping', 'conflict'];
+
     #[Url(as: 'level')]
     public ?int $levelId = null;
 
@@ -130,6 +132,9 @@ class ExportPreview extends Component
         $this->assertLevel();
         if (! in_array($this->detail, ['', 'ggb', 'calendar'], true)) {
             $this->detail = '';
+        }
+        if (! in_array($this->ggbStatus, self::GGB_STATUSES, true)) {
+            $this->ggbStatus = 'all';
         }
         $this->hydrateSemesterRanges();
     }
@@ -613,8 +618,15 @@ class ExportPreview extends Component
         $completionReport = $plan->level->code === 'PAUD' ? $completion->report($plan->academicYear, $plan->level) : null;
         $balancedPreview = $plan->level->code === 'PAUD' ? $annualGgb->balancedPreview($plan->level) : null;
         $ggbItems = null;
+        $ggbNeedsMappingCount = 0;
+        $ggbMissingColumnCount = 0;
+        $ggbSuggestedColumnCount = 0;
         if ($this->detail === 'ggb') {
             $usedScope = fn ($query) => $query->where('academic_year_id', $plan->academic_year_id)->where('level_id', $plan->level_id);
+            $ggbCatalogQuery = RppMaterialCatalogItem::query()->where('level_id', $plan->level_id)->where('source_kind', 'ggb');
+            $ggbNeedsMappingCount = (clone $ggbCatalogQuery)->needsRppColumnConfirmation()->count();
+            $ggbMissingColumnCount = (clone $ggbCatalogQuery)->whereNull('rpp_matrix_column_id')->count();
+            $ggbSuggestedColumnCount = (clone $ggbCatalogQuery)->whereNotNull('rpp_matrix_column_id')->needsRppColumnConfirmation()->count();
             $ggbQuery = RppMaterialCatalogItem::query()->where('level_id', $plan->level_id)->where('source_kind', 'ggb')
                 ->with(['ggbItem.document', 'matrixColumn', 'placements.plan', 'placements.week']);
             if (filled($this->ggbSearch)) {
@@ -627,9 +639,9 @@ class ExportPreview extends Component
                 'ready' => $ggbQuery->whereDoesntHave('placements.plan', $usedScope)->where('mapping_status', 'mapped')
                     ->whereNotNull('rpp_matrix_column_id')->whereIn('semester_scope', ['1', '2'])->where('semester_confirmed', true),
                 'semester' => $ggbQuery->where('source_semester_scope', 'general')->where('semester_confirmed', false),
-                'mapping' => $ggbQuery->where(fn ($query) => $query->whereNull('rpp_matrix_column_id')->orWhere('mapping_status', '!=', 'mapped')),
+                'mapping' => $ggbQuery->needsRppColumnConfirmation(),
                 'conflict' => $ggbQuery->where('source_semester_scope', 'general')->where('semester_confirmed', false)
-                    ->where(fn ($query) => $query->whereNull('rpp_matrix_column_id')->orWhere('mapping_status', '!=', 'mapped')),
+                    ->needsRppColumnConfirmation(),
                 default => null,
             };
             $ggbItems = $ggbQuery->orderBy('sort_order')->paginate(50, ['*'], 'ggbPage');
@@ -696,6 +708,9 @@ class ExportPreview extends Component
             'pickerMaterials' => $pickerMaterials,
             'pickerColumn' => $pickerColumn,
             'ggbItems' => $ggbItems,
+            'ggbNeedsMappingCount' => $ggbNeedsMappingCount,
+            'ggbMissingColumnCount' => $ggbMissingColumnCount,
+            'ggbSuggestedColumnCount' => $ggbSuggestedColumnCount,
             'annualValidation' => $annualValidation,
             'calendarEvents' => $plan->academicYear->calendarEvents()->with('levels:id,name,code')->orderBy('starts_on')->get(),
             'calendarPreview' => $calendarPreview,

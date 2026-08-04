@@ -29,8 +29,18 @@
                 <div class="flex flex-wrap gap-2 lg:justify-end">
                     @if($step['action'] === 'calendar')
                         <button type="button" wire:click="showDetail('calendar')" class="button-secondary">Atur Waktu</button>
-                    @elseif(in_array($step['action'], ['ggb'], true))
-                        <button type="button" wire:click="showDetail('ggb')" class="button-secondary">Buka Daftar GGB</button>
+                    @elseif($step['key'] === 'ggb_confirmation')
+                        @if($completionReport['ggb']['needs_semester'] > 0)
+                            <a href="{{ route('exports.index', ['level' => $plan->level_id, 'semester' => $semester, 'detail' => 'ggb', 'ggb_status' => 'semester']) }}#ggb-detail" class="button-secondary">Lihat {{ $completionReport['ggb']['needs_semester'] }} Perlu Semester</a>
+                        @endif
+                        @if($completionReport['ggb']['needs_mapping'] > 0)
+                            <a href="{{ route('exports.index', ['level' => $plan->level_id, 'semester' => $semester, 'detail' => 'ggb', 'ggb_status' => 'mapping']) }}#ggb-detail" class="button-secondary">Lihat {{ $completionReport['ggb']['needs_mapping'] }} Materi</a>
+                        @endif
+                        @if($completionReport['ggb']['needs_semester'] === 0 && $completionReport['ggb']['needs_mapping'] === 0)
+                            <a href="{{ route('exports.index', ['level' => $plan->level_id, 'semester' => $semester, 'detail' => 'ggb']) }}#ggb-detail" class="button-secondary">Buka Daftar GGB</a>
+                        @endif
+                    @elseif($step['action'] === 'ggb')
+                        <a href="{{ route('exports.index', ['level' => $plan->level_id, 'semester' => $semester, 'detail' => 'ggb']) }}#ggb-detail" class="button-secondary">Buka Daftar GGB</a>
                     @elseif($step['action'] === 'semester_1' || $step['action'] === 'semester_2')
                         @php($stepSemester = $step['action'] === 'semester_1' ? 1 : 2)
                         <button type="button" wire:click="selectSemester({{ $stepSemester }})" class="button-secondary">Buka Semester {{ $stepSemester }}</button>

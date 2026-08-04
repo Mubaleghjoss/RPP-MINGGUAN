@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 
 class RppMaterialCatalogItem extends Model
@@ -9,6 +10,14 @@ class RppMaterialCatalogItem extends Model
     protected $guarded = [];
 
     protected $casts = ['semester_confirmed' => 'boolean', 'auto_include' => 'boolean'];
+
+    public function scopeNeedsRppColumnConfirmation(Builder $query): Builder
+    {
+        return $query->where(fn (Builder $query) => $query
+            ->whereNull('rpp_matrix_column_id')
+            ->orWhereNull('mapping_status')
+            ->orWhere('mapping_status', '!=', 'mapped'));
+    }
 
     public function level()
     {

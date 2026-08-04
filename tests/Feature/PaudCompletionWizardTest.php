@@ -116,6 +116,61 @@ class PaudCompletionWizardTest extends TestCase
             ->assertSee('Alasan tindakan wajib diisi');
     }
 
+    public function test_wizard_links_directly_to_the_consistent_column_confirmation_filter(): void
+    {
+        [$level, $year, $plans, $columns] = $this->fixtureWithCatalog();
+        $user = User::factory()->create();
+        $columns->each->update(['last_edited_by' => $user->id]);
+        $suggested = $level->materialCatalogItems()->where('sort_order', 70)->firstOrFail();
+        $suggested->update(['mapping_status' => 'needs_verification']);
+        $missing = $level->materialCatalogItems()->where('sort_order', 71)->firstOrFail();
+        $missing->update(['rpp_matrix_column_id' => null, 'mapping_status' => 'unmapped']);
+        $mapped = $level->materialCatalogItems()->where('sort_order', 69)->firstOrFail();
+
+        $report = app(RppCompletionService::class)->report($year, $level);
+        $this->assertSame(2, $report['ggb']['needs_mapping']);
+        $this->assertSame(
+            $report['ggb']['needs_mapping'],
+            $level->materialCatalogItems()->where('source_kind', 'ggb')->needsRppColumnConfirmation()->count(),
+        );
+
+        Livewire::actingAs($user)
+            ->withQueryParams(['level' => $level->id, 'semester' => 1])
+            ->test(ExportPreview::class)
+            ->assertSee('Lihat 2 Materi')
+            ->assertSee('ggb_status=mapping', false);
+
+        $component = Livewire::actingAs($user)
+            ->withQueryParams(['level' => $level->id, 'semester' => 1, 'detail' => 'ggb', 'ggb_status' => 'mapping'])
+            ->test(ExportPreview::class)
+            ->assertSet('detail', 'ggb')
+            ->assertSet('ggbStatus', 'mapping')
+            ->assertSee('Perlu Konfirmasi Kolom (2)')
+            ->assertSee($suggested->title)
+            ->assertSee($missing->title)
+            ->assertSee('Perlu Konfirmasi Saran')
+            ->assertSee('Belum Dipetakan')
+            ->assertDontSee($mapped->display_code);
+
+        $component
+            ->set('selectedGgb', [(string) $suggested->id])
+            ->set('ggbColumnId', $columns->first()->id)
+            ->set('ggbReason', 'Konfirmasi saran kolom GGB')
+            ->call('confirmGgb')
+            ->assertSee('Perlu Konfirmasi Kolom (1)')
+            ->assertDontSee($suggested->title);
+
+        $component
+            ->set('selectedGgb', [(string) $missing->id])
+            ->set('ggbColumnId', $columns->last()->id)
+            ->set('ggbReason', 'Pemetaan kolom GGB yang kosong')
+            ->call('confirmGgb')
+            ->assertSee('Perlu Konfirmasi Kolom (0)')
+            ->assertSee('Semua kolom RPP sudah dikonfirmasi. Tidak ada materi yang tersisa pada filter ini.');
+
+        $this->assertSame(0, app(RppCompletionService::class)->report($year, $level)['ggb']['needs_mapping']);
+    }
+
     public function test_completion_report_reaches_100_only_after_all_five_checks_are_complete(): void
     {
         [$level, $year, $plans, $columns, $weeks] = $this->fixtureWithCatalog();
