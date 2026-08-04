@@ -8,6 +8,8 @@ class RppMaterialCatalogItem extends Model
 {
     protected $guarded = [];
 
+    protected $casts = ['semester_confirmed' => 'boolean', 'auto_include' => 'boolean'];
+
     public function level()
     {
         return $this->belongsTo(Level::class);

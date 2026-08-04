@@ -2,6 +2,7 @@
 
 namespace Database\Seeders;
 
+use App\Models\AcademicSemester;
 use App\Models\AcademicYear;
 use App\Models\AuditFinding;
 use App\Models\CalendarWeek;
@@ -162,6 +163,14 @@ class CurriculumSeeder extends Seeder
                     'is_effective' => true,
                 ]);
             }
+            AcademicSemester::query()->create([
+                'academic_year_id' => $year->id, 'semester' => 1,
+                'starts_on' => '2026-07-06', 'ends_on' => '2027-01-03',
+            ]);
+            AcademicSemester::query()->create([
+                'academic_year_id' => $year->id, 'semester' => 2,
+                'starts_on' => '2027-01-04', 'ends_on' => '2027-07-04',
+            ]);
 
             foreach (Level::query()->orderBy('sort_order')->get() as $level) {
                 foreach ([1, 2] as $semester) {

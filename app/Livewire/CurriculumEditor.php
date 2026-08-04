@@ -7,6 +7,7 @@ use App\Models\GgbSyllabusLink;
 use App\Models\Level;
 use App\Models\RppWeekItem;
 use App\Models\SyllabusItem;
+use App\Services\AcademicCalendarService;
 use App\Services\CurriculumRevisionService;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\Auth;
@@ -167,7 +168,7 @@ class CurriculumEditor extends Component
 
         return view('livewire.curriculum-editor', [
             'rows' => $this->rows(),
-            'effectiveWeeks' => $plan?->academicYear?->weeks->where('semester', $this->semester)->where('is_effective', true)->sortBy('week_number')->values() ?? collect(),
+            'effectiveWeeks' => $plan ? app(AcademicCalendarService::class)->weeksForPlan($plan, true) : collect(),
         ]);
     }
 

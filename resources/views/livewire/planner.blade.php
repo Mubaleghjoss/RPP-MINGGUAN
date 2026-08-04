@@ -94,7 +94,7 @@
                                     <label class="block text-sm font-medium text-slate-700">Minggu efektif
                                         <select wire:model="manualWeekId" required class="mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3">
                                             <option value="">Pilih minggu</option>
-                                            @foreach($weeks->where('is_effective', true) as $target)<option value="{{ $target->id }}">M{{ $target->week_number }} · {{ $target->starts_on->translatedFormat('d M Y') }}</option>@endforeach
+                                            @foreach($weeks->where('resolved_is_effective', true) as $target)<option value="{{ $target->id }}">M{{ $target->week_number }} · {{ $target->starts_on->translatedFormat('d M Y') }}</option>@endforeach
                                         </select>
                                     </label>
                                     <label class="block text-sm font-medium text-slate-700">Alasan penjadwalan
@@ -128,7 +128,7 @@
             <label class="block min-w-56 text-sm font-medium text-slate-700">Minggu tujuan
                 <select wire:model="bulkWeekId" class="mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3">
                     <option value="">Pilih minggu efektif</option>
-                    @foreach($weeks->where('is_effective', true) as $target)<option value="{{ $target->id }}">M{{ $target->week_number }} · {{ $target->starts_on->translatedFormat('d M Y') }}</option>@endforeach
+                    @foreach($weeks->where('resolved_is_effective', true) as $target)<option value="{{ $target->id }}">M{{ $target->week_number }} · {{ $target->starts_on->translatedFormat('d M Y') }}</option>@endforeach
                 </select>
             </label>
             <label class="block min-w-72 flex-1 text-sm font-medium text-slate-700">Alasan tindakan
@@ -150,10 +150,10 @@
     <section class="mt-6 space-y-3" aria-label="Rencana per minggu">
         @foreach($weeks as $week)
             @php($weekItems = collect($itemsByWeek->get($week->id, [])))
-            <article class="panel overflow-hidden {{ $week->is_effective ? '' : 'bg-slate-100' }}" wire:key="planner-week-{{ $week->id }}">
-                <div class="flex flex-col gap-2 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"><div><h2 class="font-semibold text-slate-950">M{{ $week->week_number }} · {{ $week->starts_on->translatedFormat('d F Y') }}</h2><p class="text-sm text-slate-500">{{ $week->month_label }}</p></div><span class="status {{ $week->is_effective ? 'status-success' : 'status-neutral' }}">{{ $week->is_effective ? 'Minggu Efektif' : str_replace('_', ' ', ucfirst($week->type)) }}</span></div>
+            <article class="panel overflow-hidden {{ $week->resolved_is_effective ? '' : 'bg-slate-100' }}" wire:key="planner-week-{{ $week->id }}">
+                <div class="flex flex-col gap-2 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"><div><h2 class="font-semibold text-slate-950">M{{ $week->week_number }} · {{ $week->starts_on->translatedFormat('d F Y') }}</h2><p class="text-sm text-slate-500">{{ $week->month_label }}</p></div><span class="status {{ $week->resolved_is_effective ? 'status-success' : 'status-neutral' }}">{{ $week->resolved_is_effective ? 'Minggu Efektif' : 'Non-efektif' }}</span></div>
                 @if($weekItems->isEmpty())
-                    <div class="p-4"><p class="text-sm text-slate-500">{{ $week->is_effective ? 'Belum ada materi pada minggu ini.' : 'Minggu ini tidak menerima materi.' }}</p></div>
+                    <div class="p-4"><p class="whitespace-pre-line text-sm text-slate-500">{{ $week->resolved_is_effective ? 'Belum ada materi pada minggu ini.' : $week->resolved_label }}</p></div>
                 @else
                     <div class="divide-y divide-slate-100">
                         @foreach($weekItems as $item)
@@ -161,7 +161,7 @@
                                 <label class="flex size-11 items-center justify-center rounded-lg hover:bg-slate-100"><input wire:model.live="selectedPlacements" type="checkbox" value="{{ $item->id }}" class="size-5 rounded border-slate-300 text-emerald-700" aria-label="Pilih {{ $item->content }}"></label>
                                 <div><p class="font-semibold text-slate-900">{{ $item->strand }}</p><span class="status {{ $item->is_locked ? 'status-warning' : 'status-neutral' }} mt-1">{{ $item->is_locked ? 'Terkunci' : 'Otomatis' }}</span></div>
                                 <p class="text-sm text-pretty text-slate-700">{{ $item->content }}</p>
-                                <select wire:change="movePlacement({{ $item->id }}, $event.target.value)" class="min-h-11 rounded-xl border border-slate-300 bg-white px-3" aria-label="Pindahkan {{ $item->content }}"><option value="">Pindahkan ke...</option>@foreach($weeks->where('is_effective', true) as $target)<option value="{{ $target->id }}" @selected($target->id === $week->id)>M{{ $target->week_number }} · {{ $target->starts_on->format('d/m') }}</option>@endforeach</select>
+                                <select wire:change="movePlacement({{ $item->id }}, $event.target.value)" class="min-h-11 rounded-xl border border-slate-300 bg-white px-3" aria-label="Pindahkan {{ $item->content }}"><option value="">Pindahkan ke...</option>@foreach($weeks->where('resolved_is_effective', true) as $target)<option value="{{ $target->id }}" @selected($target->id === $week->id)>M{{ $target->week_number }} · {{ $target->starts_on->format('d/m') }}</option>@endforeach</select>
                                 <button wire:click="toggleLock({{ $item->id }})" wire:loading.attr="disabled" class="button-secondary">{{ $item->is_locked ? 'Buka Kunci' : 'Kunci' }}</button>
                             </div>
                         @endforeach

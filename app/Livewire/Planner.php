@@ -6,6 +6,7 @@ use App\Models\AcademicYear;
 use App\Models\Level;
 use App\Models\RppPlan;
 use App\Models\RppWeekItem;
+use App\Services\AcademicCalendarService;
 use App\Services\RppBulkActionService;
 use App\Services\RppPlanner;
 use Illuminate\Pagination\LengthAwarePaginator;
@@ -208,7 +209,7 @@ class Planner extends Component
             if ((int) $this->manualSyllabusId !== $syllabusItemId) {
                 throw ValidationException::withMessages(['material' => 'Form penjadwalan tidak lagi sesuai dengan materi. Buka kembali pilihan minggu.']);
             }
-            $week = $this->plan->academicYear->weeks()->where('semester', $this->plan->semester)->where('is_effective', true)->find($this->manualWeekId);
+            $week = app(AcademicCalendarService::class)->weeksForPlan($this->plan, true)->firstWhere('id', (int) $this->manualWeekId);
             $bulk->scheduleUnplanned(
                 $this->plan,
                 [$syllabusItemId],
@@ -264,10 +265,10 @@ class Planner extends Component
         $this->resetPage('detailPage');
     }
 
-    public function render()
+    public function render(AcademicCalendarService $calendar)
     {
-        $this->plan->load(['academicYear.weeks' => fn ($query) => $query->where('semester', $this->plan->semester)->orderBy('week_number'), 'items.syllabusItem']);
-        $weeks = $this->plan->academicYear->weeks;
+        $this->plan->load(['academicYear', 'items.syllabusItem']);
+        $weeks = $calendar->weeksForPlan($this->plan);
         $itemsByWeek = $this->plan->items->sortBy(['strand', 'position'])->groupBy('calendar_week_id');
         $unplanned = $this->unplannedQuery()->count();
         $needsAllocation = $this->level->syllabusItems()->where('is_duplicate', false)->whereIn('semester_scope', [(string) $this->plan->semester, 'both'])->where('needs_allocation', true)->count();

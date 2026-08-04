@@ -2,7 +2,6 @@
 
 namespace App\Services;
 
-use App\Models\CalendarWeek;
 use App\Models\RppPlan;
 use App\Models\RppWeekItem;
 use App\Models\SyllabusItem;
@@ -17,19 +16,15 @@ class RppPlanner
         private readonly RppSchedulePatternService $patterns,
         private readonly RppMatrixService $matrix,
         private readonly RppMaterialCatalogService $catalog,
+        private readonly AcademicCalendarService $calendar,
+        private readonly RppAnnualGgbService $annualGgb,
     ) {}
 
     public function scheduleOne(RppPlan $plan, int $syllabusItemId, ?int $userId): RppWeekItem
     {
         return DB::transaction(function () use ($plan, $syllabusItemId, $userId) {
             $lockedPlan = RppPlan::query()->lockForUpdate()->findOrFail($plan->id);
-            $weeks = CalendarWeek::query()
-                ->where('academic_year_id', $lockedPlan->academic_year_id)
-                ->where('semester', $lockedPlan->semester)
-                ->where('is_effective', true)
-                ->orderBy('week_number')
-                ->lockForUpdate()
-                ->get();
+            $weeks = $this->calendar->weeksForPlan($lockedPlan, true);
 
             if ($weeks->isEmpty()) {
                 throw ValidationException::withMessages(['week' => 'Tidak ada minggu efektif yang tersedia pada tahun ajaran ini.']);
@@ -138,11 +133,7 @@ class RppPlanner
             $plan->load(['level.syllabusItems.matrixMapping.column', 'level.syllabusItems.ggbItems', 'academicYear.weeks', 'items.week', 'progressTargets.syllabusItem']);
             $this->progress->ensureDefaults($plan);
             $plan->load('progressTargets.syllabusItem');
-            $weeks = $plan->academicYear->weeks
-                ->where('semester', (int) $plan->semester)
-                ->where('is_effective', true)
-                ->sortBy('week_number')
-                ->values();
+            $weeks = $this->calendar->weeksForPlan($plan, true);
             if ($weeks->isEmpty()) {
                 if ($plan->progressTargets->isNotEmpty()) {
                     throw ValidationException::withMessages(['progress' => "Semester {$plan->semester} tidak memiliki minggu efektif untuk target progres."]);
@@ -168,7 +159,7 @@ class RppPlanner
                 ->sortBy('sort_order')
                 ->groupBy(fn ($item) => $item->matrixMapping->rpp_matrix_column_id);
 
-            $allSemesterWeeks = $plan->academicYear->weeks->where('semester', (int) $plan->semester)->sortBy('week_number')->values();
+            $allSemesterWeeks = $this->calendar->weeksForPlan($plan);
             foreach ($groups as $columnId => $columnItems) {
                 $column = $columnItems->first()->matrixMapping->column;
                 foreach ($columnItems->groupBy(fn ($item) => $item->schedule_pattern ?: $this->patterns->detect($item->allocation_text)) as $pattern => $items) {
@@ -179,6 +170,8 @@ class RppPlanner
                     $this->distribute($plan, $column, $items->values(), $slots);
                 }
             }
+
+            $this->annualGgb->rebuildForPlan($plan);
 
             $this->refreshCoverage($plan);
             $plan->update(['status' => 'draft', 'validated_at' => null]);

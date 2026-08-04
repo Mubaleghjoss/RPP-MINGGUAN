@@ -9,10 +9,12 @@ use Illuminate\Support\Collection;
 
 class RppMatrixService
 {
+    public function __construct(private readonly AcademicCalendarService $calendar) {}
+
     public function ensureMonthFocuses(RppPlan $plan): void
     {
         $plan->loadMissing(['academicYear.weeks', 'items.matrixColumn']);
-        $weeks = $plan->academicYear->weeks->where('semester', (int) $plan->semester)->sortBy('week_number');
+        $weeks = $this->calendar->weeksForPlan($plan);
         foreach ($weeks->groupBy(fn ($week) => $week->starts_on->format('Y-m')) as $key => $monthWeeks) {
             $suggestion = $plan->items
                 ->whereIn('calendar_week_id', $monthWeeks->pluck('id'))

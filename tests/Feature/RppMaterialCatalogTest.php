@@ -73,6 +73,7 @@ class RppMaterialCatalogTest extends TestCase
         $catalog = app(RppMaterialCatalogService::class);
         $catalog->syncLevel($level);
         $material = $level->materialCatalogItems()->where('ggb_item_id', $linkedLeaf->id)->firstOrFail();
+        $material->update(['semester_scope' => '1', 'semester_confirmed' => true]);
         $user = User::factory()->create();
         $service = app(RppMaterialPlacementService::class);
 
@@ -91,6 +92,7 @@ class RppMaterialCatalogTest extends TestCase
 
         $directGgb = $level->materialCatalogItems()->where('source_kind', 'ggb')
             ->whereNull('syllabus_item_id')->where('id', '!=', $material->id)->firstOrFail();
+        $directGgb->update(['semester_scope' => '1', 'semester_confirmed' => true]);
         $service->addToCell($plan, $week->id, $directGgb->rpp_matrix_column_id, [$directGgb->id], 'Masukkan GGB tanpa silabus', $user->id);
         $this->assertDatabaseHas('rpp_week_items', [
             'rpp_plan_id' => $plan->id,

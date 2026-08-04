@@ -43,6 +43,8 @@ class RppMaterialCatalogService
 
             foreach ($leaves as $leaf) {
                 [$column, $status] = $this->columnForGgb($leaf, $columns, $byId);
+                $scope = $this->semesterScope($leaf->syllabusItems);
+                $sourceScope = in_array($scope, ['1', '2'], true) ? $scope : 'general';
                 $catalog = $existingGgb->get($leaf->id);
                 if (! $catalog) {
                     $newGgb[] = [
@@ -53,7 +55,10 @@ class RppMaterialCatalogService
                         'source_kind' => 'ggb',
                         'display_code' => $this->nextCode($level, $column?->label ?: $leaf->subaspect ?: 'Materi'),
                         'title' => $leaf->title,
-                        'semester_scope' => $this->semesterScope($leaf->syllabusItems),
+                        'semester_scope' => $scope,
+                        'source_semester_scope' => $sourceScope,
+                        'semester_confirmed' => $sourceScope !== 'general',
+                        'auto_include' => false,
                         'mapping_status' => $status,
                         'sort_order' => $leaf->sort_order,
                         'lock_version' => 0,
@@ -67,8 +72,12 @@ class RppMaterialCatalogService
                 $changes = [
                     'title' => $leaf->title,
                     'sort_order' => $leaf->sort_order,
-                    'semester_scope' => $this->semesterScope($leaf->syllabusItems),
+                    'source_semester_scope' => $sourceScope,
                 ];
+                if ($sourceScope !== 'general' || ! $catalog->semester_confirmed) {
+                    $changes['semester_scope'] = $scope;
+                    $changes['semester_confirmed'] = $sourceScope !== 'general';
+                }
                 if (! $catalog->last_edited_by) {
                     $changes['rpp_matrix_column_id'] = $column?->id;
                     $changes['mapping_status'] = $status;
@@ -96,6 +105,8 @@ class RppMaterialCatalogService
                     $column = $syllabus->matrixMapping?->column;
                     $catalog = $existingSyllabus->get($syllabus->id);
                     if (! $catalog) {
+                        $sourceScope = in_array((string) $syllabus->source_semester, ['1', '2'], true)
+                            ? (string) $syllabus->source_semester : 'general';
                         $newSyllabus[] = [
                             'level_id' => $level->id,
                             'rpp_matrix_column_id' => $column?->is_active ? $column->id : null,
@@ -105,6 +116,9 @@ class RppMaterialCatalogService
                             'display_code' => $this->nextCode($level, $column?->label ?: $syllabus->category ?: 'Materi'),
                             'title' => $syllabus->title,
                             'semester_scope' => $syllabus->semester_scope,
+                            'source_semester_scope' => $sourceScope,
+                            'semester_confirmed' => $sourceScope !== 'general',
+                            'auto_include' => false,
                             'mapping_status' => $column?->is_active ? 'mapped' : 'unmapped',
                             'sort_order' => 100000 + $syllabus->sort_order,
                             'lock_version' => 0,
@@ -117,9 +131,15 @@ class RppMaterialCatalogService
                     }
                     $changes = [
                         'title' => $syllabus->title,
-                        'semester_scope' => $syllabus->semester_scope,
                         'sort_order' => 100000 + $syllabus->sort_order,
                     ];
+                    $sourceScope = in_array((string) $syllabus->source_semester, ['1', '2'], true)
+                        ? (string) $syllabus->source_semester : 'general';
+                    $changes['source_semester_scope'] = $sourceScope;
+                    if ($sourceScope !== 'general' || ! $catalog->semester_confirmed) {
+                        $changes['semester_scope'] = $syllabus->semester_scope;
+                        $changes['semester_confirmed'] = $sourceScope !== 'general';
+                    }
                     if (! $catalog->last_edited_by) {
                         $changes['rpp_matrix_column_id'] = $column?->is_active ? $column->id : null;
                         $changes['mapping_status'] = $column?->is_active ? 'mapped' : 'unmapped';
@@ -172,13 +192,21 @@ class RppMaterialCatalogService
     {
         $query = RppMaterialCatalogItem::query()->where('level_id', $plan->level_id)->where('source_kind', 'ggb');
         $total = (clone $query)->count();
-        $used = (clone $query)->whereHas('placements', fn ($placement) => $placement->where('rpp_plan_id', $plan->id))->count();
+        $used = (clone $query)->whereHas('placements.plan', fn ($annualPlan) => $annualPlan
+            ->where('academic_year_id', $plan->academic_year_id)
+            ->where('level_id', $plan->level_id))->count();
+        $semesterUsed = collect([1, 2])->mapWithKeys(fn ($semester) => [$semester => (clone $query)
+            ->whereHas('placements.plan', fn ($annualPlan) => $annualPlan
+                ->where('academic_year_id', $plan->academic_year_id)
+                ->where('level_id', $plan->level_id)
+                ->where('semester', $semester))->count()]);
 
         return [
             'total' => $total,
             'used' => $used,
             'missing' => max(0, $total - $used),
             'percent' => $total ? round(($used / $total) * 100, 2) : 100.0,
+            'semester_used' => $semesterUsed->all(),
         ];
     }
 

@@ -36,8 +36,14 @@
         <article class="panel p-4"><p class="text-sm text-slate-500">Target terukur</p><p class="metric-number mt-2">{{ $targetAchieved }}/{{ $targetTotal }}</p></article>
         <article class="panel p-4"><p class="text-sm text-slate-500">Perlu pola/manual</p><p class="metric-number mt-2">{{ $patternIssues->count() }}</p></article>
         <article class="panel p-4"><p class="text-sm text-slate-500">Konflik pemetaan</p><p class="metric-number mt-2">{{ $conflictCount }}</p><p class="mt-1 text-xs text-slate-500">{{ $unmappedCount }} materi belum dipetakan.</p></article>
-        <article class="panel p-4"><p class="text-sm text-slate-500">Cakupan GGB</p><p class="metric-number mt-2">{{ number_format($ggbCoverage['percent'], 1) }}%</p><p class="mt-1 text-xs text-slate-500">{{ $ggbCoverage['used'] }}/{{ $ggbCoverage['total'] }} butir rinci.</p></article>
+        <a href="{{ route('exports.index', ['level' => $plan->level_id, 'semester' => $semester, 'detail' => 'ggb']) }}#ggb-detail" class="panel block cursor-pointer p-4 transition-colors duration-150 hover:border-emerald-400 hover:bg-emerald-50/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600"><p class="text-sm text-slate-500">Cakupan GGB 1 Tahun</p><p class="metric-number mt-2">{{ number_format($ggbCoverage['percent'], 1) }}%</p><p class="mt-1 text-xs text-slate-500">{{ $ggbCoverage['used'] }}/{{ $ggbCoverage['total'] }} butir rinci · {{ $annualValidation?->status === 'validated' ? 'Tervalidasi tahunan' : 'Lihat daftar' }}</p></a>
     </section>
+
+    @if($detail === 'ggb')
+        @include('livewire.partials.export-ggb-detail')
+    @elseif($detail === 'calendar')
+        @include('livewire.partials.export-calendar-detail')
+    @endif
 
     <section class="panel p-4 shadow-sm lg:sticky lg:top-3 lg:z-30" aria-label="Toolbar preview">
         <div class="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
@@ -45,6 +51,7 @@
                 <button type="button" wire:click="generate" wire:loading.attr="disabled" wire:target="generate" class="button-primary"><span wire:loading.remove wire:target="generate">Susun Otomatis</span><span wire:loading wire:target="generate">Menyusun…</span></button>
                 <button type="button" @click="$refs.layoutEditor.open = true; $nextTick(() => $refs.layoutEditor.scrollIntoView({behavior:'smooth'}))" class="button-secondary">Atur Kolom</button>
                 <button type="button" @click="$refs.targetEditor.open = true; $nextTick(() => $refs.targetEditor.scrollIntoView({behavior:'smooth'}))" class="button-secondary">Atur Target</button>
+                <button type="button" wire:click="showDetail('calendar')" class="button-secondary">Atur Waktu</button>
                 <button type="button" wire:click="validateSemester" wire:loading.attr="disabled" wire:target="validateSemester" class="button-secondary"><span wire:loading.remove wire:target="validateSemester">Validasi Semester</span><span wire:loading wire:target="validateSemester">Memvalidasi…</span></button>
                 <button type="button" @click="clearDraft()" :disabled="dirtyCount === 0" class="button-secondary">Batalkan Draf</button>
             </div>
@@ -137,7 +144,7 @@
     </details>
 
     <section class="panel overflow-hidden" aria-labelledby="preview-heading">
-        <div class="border-b border-slate-200 px-4 py-4 sm:px-5"><h2 id="preview-heading" class="text-lg font-semibold text-slate-950">Matriks 26 minggu · Semester {{ $semester }}</h2><p class="mt-1 text-sm text-slate-500">Dibagi menjadi dua triwulan. Minggu non-efektif tetap terlihat tetapi tidak menerima materi.</p></div>
+        <div class="border-b border-slate-200 px-4 py-4 sm:px-5"><h2 id="preview-heading" class="text-lg font-semibold text-slate-950">Matriks {{ $weeks->count() }} minggu · Semester {{ $semester }}</h2><p class="mt-1 text-sm text-slate-500">Jumlah minggu mengikuti rentang tanggal Admin dan dibagi menjadi dua triwulan. Minggu non-efektif tetap terlihat tetapi tidak menerima materi.</p></div>
 
         <div class="hidden space-y-8 p-4 lg:block">
             @foreach($trimesterChunks as $trimesterIndex => $trimesterWeeks)
@@ -166,8 +173,8 @@
                                         <td class="matrix-sticky matrix-focus">@if($newMonth && $focus)<textarea rows="3" data-grid-cell data-domain="month_focus" data-id="{{ $focus->id }}" data-version="{{ $focus->lock_version }}" data-field="focus_text" data-original="{{ $focus->focus_text }}" aria-label="Fokus karakter {{ $week->month_label }}">{{ $focus->focus_text }}</textarea><span class="mt-1 block text-[10px] text-slate-500">{{ $focus->source === 'manual' ? 'Manual' : 'Saran otomatis' }}</span>@endif</td>
                                         <td class="matrix-sticky matrix-week text-center font-mono font-semibold">{{ $week->month_ordinal }}</td>
                                         <td class="matrix-sticky matrix-date whitespace-nowrap font-mono text-xs">{{ $week->starts_on->format('d M Y') }}</td>
-                                        @if(! $week->is_effective)
-                                            <td colspan="{{ $columns->count() }}" class="matrix-non-effective">{{ $week->label ?: match($week->type) {'evaluation' => 'Evaluasi', 'religious_holiday' => 'Hari Raya', default => 'Libur'} }}</td>
+                                        @if(! $week->resolved_is_effective)
+                                            <td colspan="{{ $columns->count() }}" class="matrix-non-effective whitespace-pre-line">{{ $week->resolved_label }}</td>
                                         @else
                                             @foreach($columns as $column)
                                                 @php($cellItems = collect($itemsByCell->get($week->id.':'.$column->id, [])))
@@ -196,15 +203,15 @@
                 @php($monthKey = $week->starts_on->format('Y-m'))
                 @php($focus = $plan->monthFocuses->firstWhere('month_key', $monthKey))
                 <article class="p-4" wire:key="mobile-matrix-week-{{ $week->id }}">
-                    <div class="flex items-start justify-between gap-3"><div><p class="text-xs font-semibold uppercase tracking-wide text-emerald-700">{{ $week->month_label }} · Pekan {{ $week->month_ordinal }}</p><h3 class="mt-1 font-semibold text-slate-950">M{{ $week->week_number }} · {{ $week->starts_on->translatedFormat('d F Y') }}</h3></div><span class="status {{ $week->is_effective ? 'status-success' : 'status-warning' }}">{{ $week->is_effective ? 'Efektif' : ($week->label ?: 'Non-efektif') }}</span></div>
+                    <div class="flex items-start justify-between gap-3"><div><p class="text-xs font-semibold uppercase tracking-wide text-emerald-700">{{ $week->month_label }} · Pekan {{ $week->month_ordinal }}</p><h3 class="mt-1 font-semibold text-slate-950">M{{ $week->week_number }} · {{ $week->starts_on->translatedFormat('d F Y') }}</h3></div><span class="status {{ $week->resolved_is_effective ? 'status-success' : 'status-warning' }}">{{ $week->resolved_is_effective ? 'Efektif' : 'Non-efektif' }}</span></div>
                     @if($focus)<label class="mt-3 grid gap-1 text-sm font-medium text-slate-700">Fokus karakter<input data-grid-cell data-domain="month_focus" data-id="{{ $focus->id }}" data-version="{{ $focus->lock_version }}" data-field="focus_text" data-original="{{ $focus->focus_text }}" value="{{ $focus->focus_text }}" class="min-h-11 rounded-xl border border-slate-300 bg-white px-3"></label>@endif
-                    @if($week->is_effective)
+                    @if($week->resolved_is_effective)
                         <div class="mt-4 space-y-4">
                             @foreach($columns->groupBy('aspect_label') as $aspect => $aspectColumns)
                                 <section><h4 class="text-xs font-semibold uppercase tracking-wide text-slate-500">{{ $aspect }}</h4><div class="mt-2 grid gap-3">@foreach($aspectColumns as $column)@php($cellItems = collect($itemsByCell->get($week->id.':'.$column->id, [])))<div class="rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200"><div class="flex items-center justify-between gap-3"><h5 class="text-xs font-semibold text-emerald-800">{{ $column->label }}</h5><button type="button" wire:click="openMaterialPicker({{ $week->id }}, {{ $column->id }})" class="min-h-11 rounded-lg px-3 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">+ Isi Materi</button></div><div class="mt-2 grid gap-2">@foreach($cellItems as $item)@php($sourceCode = $item->syllabusItem?->stable_code ?? $item->materials->first()?->ggbItem?->stable_code ?? 'Materi manual')<button type="button" @click='openMatrixItem(@js(["id"=>$item->id,"version"=>$item->lock_version,"calendar_week_id"=>$item->calendar_week_id,"rpp_matrix_column_id"=>$item->rpp_matrix_column_id,"content"=>$item->content,"progress_start"=>$item->progress_start,"progress_end"=>$item->progress_end,"progress_kind"=>$item->progress_kind,"position"=>$item->position,"is_locked"=>$item->is_locked?1:0,"source"=>$item->source,"stable_code"=>$sourceCode,"source_note"=>app(\App\Services\RppMatrixService::class)->sourceNote($item)]))' class="flex min-h-11 w-full items-start justify-between gap-3 rounded-lg bg-white p-3 text-left ring-1 ring-slate-200"><span class="text-sm text-slate-900">{{ app(\App\Services\RppMaterialCatalogService::class)->placementLabel($item) }}</span><span class="text-xs font-semibold text-emerald-700">Edit</span></button>@endforeach</div></div>@endforeach</div></section>
                             @endforeach
                         </div>
-                    @else<p class="mt-3 text-sm text-slate-600">{{ $week->label ?: 'Minggu ini tidak menerima materi.' }}</p>@endif
+                    @else<p class="mt-3 whitespace-pre-line text-sm text-slate-600">{{ $week->resolved_label }}</p>@endif
                 </article>
             @endforeach
         </div>

@@ -38,7 +38,7 @@ class RppSchedulePatternService
 
     public function slots(string $pattern, Collection $allWeeks): Collection
     {
-        $effective = $allWeeks->where('is_effective', true)->values();
+        $effective = $allWeeks->filter(fn ($week) => (bool) ($week->resolved_is_effective ?? $week->is_effective))->values();
         if ($pattern === 'weekly') {
             return $effective;
         }

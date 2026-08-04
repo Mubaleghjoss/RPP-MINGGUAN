@@ -16,6 +16,7 @@ class RppMaterialPlacementService
     public function __construct(
         private readonly RppPlanner $planner,
         private readonly RppMaterialCatalogService $catalog,
+        private readonly AcademicCalendarService $calendar,
     ) {}
 
     public function addToCell(RppPlan $plan, int $weekId, int $columnId, array $catalogIds, string $reason, ?int $userId): int
@@ -30,8 +31,8 @@ class RppMaterialPlacementService
         return DB::transaction(function () use ($plan, $weekId, $columnId, $ids, $reason, $userId) {
             $lockedPlan = RppPlan::query()->lockForUpdate()->findOrFail($plan->id);
             $week = CalendarWeek::query()->where('academic_year_id', $lockedPlan->academic_year_id)
-                ->where('semester', $lockedPlan->semester)->where('is_effective', true)->lockForUpdate()->find($weekId);
-            if (! $week) {
+                ->where('semester', $lockedPlan->semester)->lockForUpdate()->find($weekId);
+            if (! $week || ! $this->calendar->isEffective($lockedPlan, $week)) {
                 throw ValidationException::withMessages(['week' => 'Materi hanya dapat ditambahkan pada minggu efektif semester aktif.']);
             }
             $column = RppMatrixColumn::query()->where('level_id', $lockedPlan->level_id)->where('is_active', true)->find($columnId);
@@ -41,6 +42,7 @@ class RppMaterialPlacementService
             $materials = RppMaterialCatalogItem::query()->where('level_id', $lockedPlan->level_id)
                 ->where('rpp_matrix_column_id', $column->id)->where('mapping_status', '!=', 'unmapped')
                 ->whereIn('semester_scope', [(string) $lockedPlan->semester, 'both'])
+                ->where(fn ($query) => $query->where('source_semester_scope', '!=', 'general')->orWhere('semester_confirmed', true))
                 ->whereIn('id', $ids)->with(['ggbItem.syllabusItems.matrixMapping.column'])->lockForUpdate()->get();
             if ($materials->count() !== count($ids)) {
                 throw ValidationException::withMessages(['material' => 'Sebagian materi tidak sesuai kolom, belum dipetakan, atau berasal dari jenjang lain.']);

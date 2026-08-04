@@ -1,58 +1,8 @@
-<div>
-    <header>
-        <p class="text-sm font-semibold text-emerald-700">{{ $year->label }}</p>
-        <h1 class="mt-1 text-3xl font-semibold text-balance text-slate-950">Kalender akademik mingguan</h1>
-        <p class="mt-2 max-w-3xl text-pretty text-slate-600">Semester 1 memakai M1–M26 dan Semester 2 memakai M27–M52. Perubahan jenis minggu langsung menyusun ulang penempatan otomatis pada semester terkait.</p>
+<div class="space-y-6">
+    <header class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div><p class="text-sm font-semibold text-emerald-700">{{ $year->label }}</p><h1 class="mt-1 text-3xl font-semibold text-balance text-slate-950">Kalender akademik berbasis rentang</h1><p class="mt-2 max-w-3xl text-pretty text-slate-600">Periode semester dan kegiatan serentak dikelola dari preview RPP agar dampak pergeseran materi dapat diperiksa sebelum disimpan.</p></div>
+        <a href="{{ route('exports.index', ['level' => $firstLevelId, 'semester' => 1, 'detail' => 'calendar']) }}#calendar-detail" class="button-primary">Atur Waktu di Preview RPP</a>
     </header>
-
-    @if($notice)
-        <div @class([
-            'mt-5 rounded-xl px-4 py-3 text-sm ring-1',
-            'bg-red-50 text-red-900 ring-red-200' => str_contains(strtolower($notice), 'gagal') || str_contains(strtolower($notice), 'tidak'),
-            'bg-emerald-50 text-emerald-900 ring-emerald-200' => ! str_contains(strtolower($notice), 'gagal') && ! str_contains(strtolower($notice), 'tidak'),
-        ]) role="status">{{ $notice }}</div>
-    @endif
-
-    <section class="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Legenda kalender">
-        <div class="rounded-xl bg-white p-4 ring-1 ring-emerald-200"><p class="font-semibold text-emerald-800">Minggu Efektif</p><p class="mt-1 text-sm text-slate-500">Dapat menerima materi.</p></div>
-        <div class="rounded-xl bg-white p-4 ring-1 ring-amber-200"><p class="font-semibold text-amber-800">Evaluasi</p><p class="mt-1 text-sm text-slate-500">Tidak menerima materi.</p></div>
-        <div class="rounded-xl bg-white p-4 ring-1 ring-slate-200"><p class="font-semibold text-slate-700">Libur</p><p class="mt-1 text-sm text-slate-500">Jadwal dikosongkan.</p></div>
-        <div class="rounded-xl bg-white p-4 ring-1 ring-red-200"><p class="font-semibold text-red-800">Hari Raya</p><p class="mt-1 text-sm text-slate-500">Jadwal dikosongkan.</p></div>
-    </section>
-
-    <section class="panel mt-6 overflow-hidden">
-        <div class="overflow-x-auto">
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th class="sticky left-0 z-10 bg-slate-50">Pekan</th>
-                        <th>Semester</th>
-                        <th>Tanggal Mulai</th>
-                        <th>Bulan</th>
-                        <th>Jenis Minggu</th>
-                        <th>Materi Terpasang</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach($weeks as $week)
-                        <tr wire:key="week-{{ $week->id }}">
-                            <td class="sticky left-0 z-[1] bg-white font-mono font-semibold tabular-nums">M{{ $week->week_number }}</td>
-                            <td><span class="status-badge">Semester {{ $week->semester }}</span></td>
-                            <td>{{ $week->starts_on->translatedFormat('d F Y') }}</td>
-                            <td>{{ $week->month_label }}</td>
-                            <td>
-                                <select wire:change="setType({{ $week->id }}, $event.target.value)" class="min-h-11 rounded-xl border border-slate-300 bg-white px-3 text-sm" aria-label="Jenis minggu {{ $week->week_number }}">
-                                    <option value="effective" @selected($week->type === 'effective')>Minggu Efektif</option>
-                                    <option value="evaluation" @selected($week->type === 'evaluation')>Evaluasi</option>
-                                    <option value="holiday" @selected($week->type === 'holiday')>Libur</option>
-                                    <option value="religious_holiday" @selected($week->type === 'religious_holiday')>Hari Raya</option>
-                                </select>
-                            </td>
-                            <td class="font-mono tabular-nums">{{ $week->placements_count }}</td>
-                        </tr>
-                    @endforeach
-                </tbody>
-            </table>
-        </div>
-    </section>
+    <section class="grid gap-3 sm:grid-cols-2">@foreach($semesters as $period)<article class="panel p-5"><p class="text-sm font-semibold text-emerald-700">Semester {{ $period->semester }}</p><p class="mt-2 text-lg font-semibold text-slate-950">{{ $period->starts_on->translatedFormat('d F Y') }} – {{ $period->ends_on->translatedFormat('d F Y') }}</p><p class="mt-1 text-sm text-slate-500">{{ $year->weeks()->where('semester', $period->semester)->count() }} minggu kalender</p></article>@endforeach</section>
+    <section class="panel overflow-hidden"><div class="border-b border-slate-200 p-5"><h2 class="text-lg font-semibold text-slate-950">Rentang aktif</h2><p class="mt-1 text-sm text-slate-600">Keterangan yang sama ditampilkan pada preview web dan workbook Excel.</p></div><div class="divide-y divide-slate-200">@forelse($events as $event)<article class="grid gap-3 p-5 md:grid-cols-[150px_minmax(0,1fr)_220px]"><div><span class="status status-warning">{{ app(\App\Services\AcademicCalendarService::class)->typeLabel($event->type) }}</span></div><div><h3 class="font-semibold text-slate-950">{{ $event->title }}</h3>@if($event->details)<p class="mt-1 text-sm text-slate-600">{{ $event->details }}</p>@endif<p class="mt-2 text-xs font-medium text-slate-500">{{ $event->applies_to_all ? 'Semua jenjang' : $event->levels->pluck('name')->implode(', ') }}</p></div><p class="font-mono text-sm text-slate-700">{{ $event->starts_on->format('d/m/Y') }}–{{ $event->ends_on->format('d/m/Y') }}</p></article>@empty<p class="p-6 text-sm text-slate-600">Belum ada rentang libur, evaluasi, atau ujian.</p>@endforelse</div></section>
 </div>

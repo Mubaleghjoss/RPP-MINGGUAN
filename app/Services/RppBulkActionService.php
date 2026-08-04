@@ -16,6 +16,7 @@ class RppBulkActionService
         private readonly RppPlanner $planner,
         private readonly RppMatrixPresetService $presets,
         private readonly RppMaterialCatalogService $catalog,
+        private readonly AcademicCalendarService $calendar,
     ) {}
 
     public function updatePlacements(RppPlan $plan, array $placementIds, string $action, ?int $weekId, string $reason, ?int $userId): int
@@ -148,11 +149,10 @@ class RppBulkActionService
         $week = CalendarWeek::query()
             ->where('academic_year_id', $plan->academic_year_id)
             ->where('semester', $plan->semester)
-            ->where('is_effective', true)
             ->lockForUpdate()
             ->find($weekId);
 
-        if (! $week) {
+        if (! $week || ! $this->calendar->isEffective($plan, $week)) {
             throw ValidationException::withMessages(['week' => 'Minggu tujuan tidak efektif atau bukan bagian dari tahun ajaran ini.']);
         }
 

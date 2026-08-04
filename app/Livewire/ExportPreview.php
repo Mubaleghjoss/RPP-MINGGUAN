@@ -3,6 +3,7 @@
 namespace App\Livewire;
 
 use App\Models\AcademicYear;
+use App\Models\CalendarEvent;
 use App\Models\Level;
 use App\Models\RppMaterialCatalogItem;
 use App\Models\RppMatrixColumn;
@@ -12,7 +13,9 @@ use App\Models\RppPlan;
 use App\Models\RppProgressTarget;
 use App\Models\RppWeekItem;
 use App\Models\SyllabusItem;
+use App\Services\AcademicCalendarService;
 use App\Services\CurriculumRevisionService;
+use App\Services\RppAnnualGgbService;
 use App\Services\RppMaterialCatalogService;
 use App\Services\RppMaterialPlacementService;
 use App\Services\RppMatrixPresetService;
@@ -26,6 +29,7 @@ use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
+use Livewire\WithPagination;
 use RuntimeException;
 use Throwable;
 
@@ -33,11 +37,56 @@ use Throwable;
 #[Title('Preview dan Ekspor RPP')]
 class ExportPreview extends Component
 {
+    use WithPagination;
+
     #[Url(as: 'level')]
     public ?int $levelId = null;
 
     #[Url]
     public int $semester = 1;
+
+    #[Url]
+    public string $detail = '';
+
+    #[Url(as: 'ggb_status')]
+    public string $ggbStatus = 'all';
+
+    #[Url(as: 'ggb_search')]
+    public string $ggbSearch = '';
+
+    public array $selectedGgb = [];
+
+    public ?int $ggbSemester = null;
+
+    public ?int $ggbColumnId = null;
+
+    public string $ggbReason = '';
+
+    public string $semesterOneStart = '';
+
+    public string $semesterOneEnd = '';
+
+    public string $semesterTwoStart = '';
+
+    public string $semesterTwoEnd = '';
+
+    public ?int $calendarEventId = null;
+
+    public string $calendarType = 'holiday';
+
+    public string $calendarTitle = '';
+
+    public string $calendarDetails = '';
+
+    public string $calendarStartsOn = '';
+
+    public string $calendarEndsOn = '';
+
+    public bool $calendarAllLevels = true;
+
+    public array $calendarLevelIds = [];
+
+    public bool $calendarConfirmImpact = false;
 
     public string $notice = '';
 
@@ -75,6 +124,10 @@ class ExportPreview extends Component
         $this->levelId ??= Level::query()->orderBy('sort_order')->value('id');
         $this->assertLevel();
         $this->notice = (string) session('notice', '');
+        if (! in_array($this->detail, ['', 'ggb', 'calendar'], true)) {
+            $this->detail = '';
+        }
+        $this->hydrateSemesterRanges();
     }
 
     public function updatedLevelId(): void
@@ -83,6 +136,8 @@ class ExportPreview extends Component
         $this->resetTargetForm();
         $this->resetMessages();
         $this->closeMaterialPicker();
+        $this->selectedGgb = [];
+        $this->resetPage('ggbPage');
     }
 
     public function selectSemester(int $semester): void
@@ -94,10 +149,141 @@ class ExportPreview extends Component
         $this->closeMaterialPicker();
     }
 
+    public function showDetail(string $detail): void
+    {
+        abort_unless(in_array($detail, ['', 'ggb', 'calendar'], true), 422);
+        $this->detail = $detail;
+        $this->selectedGgb = [];
+        $this->resetMessages();
+        $this->resetPage('ggbPage');
+    }
+
+    public function updatedGgbSearch(): void
+    {
+        $this->resetPage('ggbPage');
+    }
+
+    public function updatedGgbStatus(): void
+    {
+        $this->selectedGgb = [];
+        $this->resetPage('ggbPage');
+    }
+
+    public function selectVisibleGgb(array $ids): void
+    {
+        $allowed = RppMaterialCatalogItem::query()->where('level_id', $this->levelId)->where('source_kind', 'ggb')
+            ->whereIn('id', $ids)->pluck('id')->map(fn ($id) => (string) $id);
+        $this->selectedGgb = collect($this->selectedGgb)->merge($allowed)->unique()->values()->all();
+    }
+
+    public function clearGgbSelection(): void
+    {
+        $this->selectedGgb = [];
+    }
+
+    public function confirmGgb(RppAnnualGgbService $service): void
+    {
+        $this->resetMessages();
+        try {
+            $count = $service->confirm($this->level(), $this->selectedGgb, $this->ggbSemester, $this->ggbColumnId, $this->ggbReason, Auth::id());
+            $this->notice = "{$count} materi GGB dikonfirmasi. Materi siap dapat dimasukkan melalui Lengkapi GGB 1 Tahun.";
+            $this->selectedGgb = [];
+            $this->ggbSemester = null;
+            $this->ggbColumnId = null;
+            $this->ggbReason = '';
+        } catch (ValidationException $exception) {
+            $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Konfirmasi GGB gagal.';
+        }
+    }
+
+    public function completeAnnualGgb(RppAnnualGgbService $service): void
+    {
+        $this->resetMessages();
+        try {
+            $result = $service->enableReadyAndSchedule($this->year(), $this->level(), $this->ggbReason, Auth::id());
+            $this->notice = "{$result['scheduled']} materi GGB ditambahkan. Cakupan tahunan sekarang {$result['coverage']['percent']}%.";
+            $this->ggbReason = '';
+            $this->selectedGgb = [];
+        } catch (ValidationException $exception) {
+            $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Bulk GGB gagal.';
+        } catch (Throwable $exception) {
+            report($exception);
+            $this->errorMessage = 'Bulk GGB gagal. Tidak ada perubahan yang diterapkan.';
+        }
+    }
+
+    public function validateAnnualGgb(RppAnnualGgbService $service): void
+    {
+        $valid = $service->validateAnnual($this->year(), $this->level(), Auth::id());
+        $this->notice = $valid
+            ? 'Cakupan GGB satu tahun tervalidasi 100%.'
+            : 'Validasi tahunan ditahan karena masih ada materi GGB yang belum masuk RPP.';
+    }
+
+    public function saveSemesterRanges(AcademicCalendarService $calendar): void
+    {
+        $this->resetMessages();
+        try {
+            $calendar->saveSemesterRanges($this->year(), [
+                'semester_1_start' => $this->semesterOneStart, 'semester_1_end' => $this->semesterOneEnd,
+                'semester_2_start' => $this->semesterTwoStart, 'semester_2_end' => $this->semesterTwoEnd,
+            ], Auth::id());
+            $this->notice = 'Rentang Semester 1 dan 2 diperbarui. Jumlah minggu mengikuti tanggal Admin.';
+            $this->hydrateSemesterRanges();
+        } catch (ValidationException $exception) {
+            $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Rentang semester tidak dapat disimpan.';
+        }
+    }
+
+    public function editCalendarEvent(int $eventId): void
+    {
+        $event = CalendarEvent::query()->where('academic_year_id', $this->year()->id)->findOrFail($eventId);
+        $this->calendarEventId = $event->id;
+        $this->calendarType = $event->type;
+        $this->calendarTitle = $event->title;
+        $this->calendarDetails = (string) $event->details;
+        $this->calendarStartsOn = $event->starts_on->toDateString();
+        $this->calendarEndsOn = $event->ends_on->toDateString();
+        $this->calendarAllLevels = $event->applies_to_all;
+        $this->calendarLevelIds = $event->levels()->pluck('levels.id')->map(fn ($id) => (string) $id)->all();
+        $this->calendarConfirmImpact = false;
+    }
+
+    public function saveCalendarEvent(AcademicCalendarService $calendar): void
+    {
+        $this->resetMessages();
+        try {
+            $calendar->saveEvent($this->year(), $this->calendarPayload(), Auth::id(), $this->calendarEventId);
+            $this->notice = 'Rentang kalender disimpan dan RPP terdampak digeser ke minggu efektif berikutnya.';
+            $this->resetCalendarForm();
+        } catch (ValidationException $exception) {
+            $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Rentang kalender tidak dapat disimpan.';
+        } catch (Throwable $exception) {
+            report($exception);
+            $this->errorMessage = 'Rentang kalender gagal disimpan. Tidak ada perubahan yang diterapkan.';
+        }
+    }
+
+    public function deleteCalendarEvent(int $eventId, AcademicCalendarService $calendar): void
+    {
+        $event = CalendarEvent::query()->where('academic_year_id', $this->year()->id)->findOrFail($eventId);
+        $calendar->deleteEvent($event, Auth::id());
+        $this->notice = 'Rentang dihapus. Minggu dibuka kembali; materi tidak ditarik mundur otomatis.';
+        $this->resetCalendarForm();
+    }
+
+    public function resetCalendarForm(): void
+    {
+        $this->reset(['calendarEventId', 'calendarTitle', 'calendarDetails', 'calendarStartsOn', 'calendarEndsOn', 'calendarLevelIds', 'calendarConfirmImpact']);
+        $this->calendarType = 'holiday';
+        $this->calendarAllLevels = true;
+    }
+
     public function openMaterialPicker(int $weekId, int $columnId): void
     {
         $plan = $this->plan();
-        abort_unless($plan->academicYear->weeks()->whereKey($weekId)->where('semester', $plan->semester)->where('is_effective', true)->exists(), 422);
+        $week = $plan->academicYear->weeks()->whereKey($weekId)->where('semester', $plan->semester)->first();
+        abort_unless($week && app(AcademicCalendarService::class)->isEffective($plan, $week), 422);
         abort_unless(RppMatrixColumn::query()->whereKey($columnId)->where('level_id', $plan->level_id)->where('is_active', true)->exists(), 422);
         $this->pickerWeekId = $weekId;
         $this->pickerColumnId = $columnId;
@@ -263,6 +449,7 @@ class ExportPreview extends Component
         RppMatrixService $matrix,
         RppSchedulePatternService $patterns,
         RppMaterialCatalogService $catalog,
+        AcademicCalendarService $calendar,
     ) {
         $presets->syncLevel($this->level());
         $plan = $this->plan()->load([
@@ -279,7 +466,7 @@ class ExportPreview extends Component
         ]);
         $matrix->ensureMonthFocuses($plan);
         $plan->load('monthFocuses');
-        $weeks = $plan->academicYear->weeks;
+        $weeks = $calendar->weeksForPlan($plan);
         $monthOrdinals = [];
         foreach ($weeks as $week) {
             $key = $week->starts_on->format('Y-m');
@@ -312,12 +499,39 @@ class ExportPreview extends Component
             ->whereIn('semester_scope', [(string) $this->semester, 'both'])
             ->filter(fn ($item) => in_array($item->schedule_pattern, ['unknown', 'tentative'], true) && ! $plan->items->contains('syllabus_item_id', $item->id));
         $ggbCoverage = $catalog->coverage($plan);
+        $annualValidation = $plan->academicYear->annualValidations()->where('level_id', $plan->level_id)->first();
+        $ggbItems = null;
+        if ($this->detail === 'ggb') {
+            $usedScope = fn ($query) => $query->where('academic_year_id', $plan->academic_year_id)->where('level_id', $plan->level_id);
+            $ggbQuery = RppMaterialCatalogItem::query()->where('level_id', $plan->level_id)->where('source_kind', 'ggb')
+                ->with(['ggbItem.document', 'matrixColumn', 'placements.plan', 'placements.week']);
+            if (filled($this->ggbSearch)) {
+                $needle = '%'.trim($this->ggbSearch).'%';
+                $ggbQuery->where(fn ($query) => $query->where('display_code', 'like', $needle)->orWhere('title', 'like', $needle)
+                    ->orWhereHas('ggbItem', fn ($ggb) => $ggb->where('stable_code', 'like', $needle)));
+            }
+            match ($this->ggbStatus) {
+                'used' => $ggbQuery->whereHas('placements.plan', $usedScope),
+                'ready' => $ggbQuery->whereDoesntHave('placements.plan', $usedScope)->where('mapping_status', 'mapped')
+                    ->whereNotNull('rpp_matrix_column_id')->whereIn('semester_scope', ['1', '2'])->where('semester_confirmed', true),
+                'semester' => $ggbQuery->where('source_semester_scope', 'general')->where('semester_confirmed', false),
+                'mapping' => $ggbQuery->where(fn ($query) => $query->whereNull('rpp_matrix_column_id')->orWhere('mapping_status', '!=', 'mapped')),
+                'conflict' => $ggbQuery->where('source_semester_scope', 'general')->where('semester_confirmed', false)
+                    ->where(fn ($query) => $query->whereNull('rpp_matrix_column_id')->orWhere('mapping_status', '!=', 'mapped')),
+                default => null,
+            };
+            $ggbItems = $ggbQuery->orderBy('sort_order')->paginate(50, ['*'], 'ggbPage');
+        }
+        $calendarPreview = $this->detail === 'calendar'
+            ? $calendar->previewEvent($plan->academicYear, $this->calendarPayload(), $this->calendarEventId)
+            : null;
         $pickerMaterials = collect();
         $pickerColumn = null;
         if ($this->pickerWeekId && $this->pickerColumnId) {
             $pickerColumn = $columns->firstWhere('id', $this->pickerColumnId);
             $pickerQuery = RppMaterialCatalogItem::query()->where('level_id', $plan->level_id)
                 ->whereIn('semester_scope', [(string) $plan->semester, 'both'])
+                ->where(fn ($query) => $query->where('source_semester_scope', '!=', 'general')->orWhere('semester_confirmed', true))
                 ->with([
                     'ggbItem.document',
                     'ggbItem.syllabusItems.document',
@@ -351,14 +565,14 @@ class ExportPreview extends Component
             'headerTree' => $catalog->headerTree($columns),
             'itemsByCell' => $itemsByCell,
             'monthRows' => $matrix->monthRows($weeks, $plan->monthFocuses),
-            'trimesterChunks' => $weeks->chunk(13)->values(),
+            'trimesterChunks' => $weeks->chunk(max(1, (int) ceil($weeks->count() / 2)))->values(),
             'layoutColumns' => $layoutColumns,
             'layoutMappings' => $layoutMappings,
             'patternIssues' => $patternIssues,
             'patternLabels' => collect(RppSchedulePatternService::PATTERNS)->mapWithKeys(fn ($pattern) => [$pattern => $patterns->label($pattern)]),
             'targets' => $targets,
             'eligibleMaterials' => $eligible,
-            'effectiveWeeks' => $weeks->where('is_effective', true)->values(),
+            'effectiveWeeks' => $weeks->where('resolved_is_effective', true)->values(),
             'targetTotal' => $targets->sum(fn ($target) => $target->summary['total']),
             'targetAchieved' => $targets->sum(fn ($target) => $target->summary['achieved']),
             'annualTargetTotal' => $annualTargets->sum(fn ($target) => $progress->progressSummary($target)['total']),
@@ -369,6 +583,10 @@ class ExportPreview extends Component
             'ggbCoverage' => $ggbCoverage,
             'pickerMaterials' => $pickerMaterials,
             'pickerColumn' => $pickerColumn,
+            'ggbItems' => $ggbItems,
+            'annualValidation' => $annualValidation,
+            'calendarEvents' => $plan->academicYear->calendarEvents()->with('levels:id,name,code')->orderBy('starts_on')->get(),
+            'calendarPreview' => $calendarPreview,
         ]);
     }
 
@@ -380,6 +598,33 @@ class ExportPreview extends Component
             ['academic_year_id' => $year->id, 'level_id' => $this->levelId, 'semester' => $this->semester],
             ['status' => 'draft']
         );
+    }
+
+    private function year(): AcademicYear
+    {
+        return AcademicYear::query()->where('is_active', true)->firstOrFail();
+    }
+
+    private function hydrateSemesterRanges(): void
+    {
+        $calendar = app(AcademicCalendarService::class);
+        $year = $this->year();
+        $one = $calendar->semester($year, 1);
+        $two = $calendar->semester($year, 2);
+        $this->semesterOneStart = $one->starts_on->toDateString();
+        $this->semesterOneEnd = $one->ends_on->toDateString();
+        $this->semesterTwoStart = $two->starts_on->toDateString();
+        $this->semesterTwoEnd = $two->ends_on->toDateString();
+    }
+
+    private function calendarPayload(): array
+    {
+        return [
+            'type' => $this->calendarType, 'title' => $this->calendarTitle, 'details' => $this->calendarDetails,
+            'starts_on' => $this->calendarStartsOn, 'ends_on' => $this->calendarEndsOn,
+            'applies_to_all' => $this->calendarAllLevels, 'level_ids' => $this->calendarLevelIds,
+            'confirm_impact' => $this->calendarConfirmImpact,
+        ];
     }
 
     private function assertLevel(): void

@@ -30,6 +30,7 @@ class CurriculumWorkbookExporter
         private readonly RppMatrixService $matrix,
         private readonly RppMatrixPresetService $presets,
         private readonly RppMaterialCatalogService $catalog,
+        private readonly AcademicCalendarService $calendar,
     ) {}
 
     public function activeYearLabel(): string
@@ -61,7 +62,7 @@ class CurriculumWorkbookExporter
             ])->firstOrFail();
         $this->matrix->ensureMonthFocuses($plan);
         $plan->load('monthFocuses');
-        $weeks = $year->weeks()->where('semester', $semester)->orderBy('week_number')->get();
+        $weeks = $this->calendar->weeksForPlan($plan);
 
         $book = new Spreadsheet;
         $book->removeSheetByIndex(0);
@@ -145,6 +146,27 @@ class CurriculumWorkbookExporter
 
         $row += 2;
         $sheet->mergeCells("A{$row}:H{$row}");
+        $sheet->setCellValue("A{$row}", 'KALENDER LIBUR, EVALUASI, DAN UJIAN');
+        $this->styleHeader($sheet, "A{$row}:H{$row}");
+        $row++;
+        $events = $this->calendar->eventsForLevel($plan->academic_year_id, $plan->level_id)
+            ->filter(fn ($event) => $event->starts_on->lte($plan->academicYear->ends_on) && $event->ends_on->gte($plan->academicYear->starts_on));
+        if ($events->isEmpty()) {
+            $sheet->mergeCells("A{$row}:H{$row}");
+            $sheet->setCellValue("A{$row}", 'Tidak ada rentang kalender non-efektif.');
+            $row++;
+        } else {
+            foreach ($events as $event) {
+                $this->writeTextRow($sheet, $row++, [
+                    $this->calendar->typeLabel($event->type), $event->title,
+                    $event->starts_on->format('d-m-Y'), $event->ends_on->format('d-m-Y'),
+                    $event->details, $event->applies_to_all ? 'Semua jenjang' : $event->levels->pluck('name')->implode(', '), '', '',
+                ]);
+            }
+        }
+
+        $row += 2;
+        $sheet->mergeCells("A{$row}:H{$row}");
         $sheet->setCellValue("A{$row}", 'PEMETAAN KOLOM RPP');
         $this->styleHeader($sheet, "A{$row}:H{$row}");
         $row++;
@@ -182,7 +204,7 @@ class CurriculumWorkbookExporter
         $columnCells = [];
         $catalogCells = [];
 
-        foreach ($weeks->chunk(13)->values() as $trimesterIndex => $trimesterWeeks) {
+        foreach ($weeks->chunk(max(1, (int) ceil($weeks->count() / 2)))->values() as $trimesterIndex => $trimesterWeeks) {
             $trimester = $this->matrix->trimesterNumber((int) $plan->semester, $trimesterIndex);
             $titleRow = $row;
             $sheet->mergeCells("A{$row}:{$lastColumn}{$row}");
@@ -219,13 +241,13 @@ class CurriculumWorkbookExporter
                 $sheet->setCellValueExplicit([3, $row], (string) $monthOrdinal, DataType::TYPE_STRING);
                 $sheet->setCellValueExplicit([4, $row], $week->starts_on->format('d M Y'), DataType::TYPE_STRING);
 
-                if (! $week->is_effective) {
+                if (! $week->resolved_is_effective) {
                     $start = Coordinate::stringFromColumnIndex($materialStart);
                     $end = Coordinate::stringFromColumnIndex($materialEnd);
                     if ($start !== $end) {
                         $sheet->mergeCells("{$start}{$row}:{$end}{$row}");
                     }
-                    $sheet->setCellValue("{$start}{$row}", $week->label ?: $this->weekType($week->type));
+                    $sheet->setCellValueExplicit("{$start}{$row}", (string) $week->resolved_label, DataType::TYPE_STRING);
                     $sheet->getStyle("{$start}{$row}:{$end}{$row}")->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setRGB('FEF3C7');
                 } else {
                     foreach ($columns->values() as $index => $column) {
@@ -340,7 +362,9 @@ class CurriculumWorkbookExporter
                 $this->writeTextRow($sheet, $row, [
                     $material->display_code,
                     $source,
-                    $material->semester_scope === 'both' ? 'Semester 1 & 2' : 'Semester '.$material->semester_scope,
+                    ! $material->semester_confirmed && $material->source_semester_scope === 'general'
+                        ? 'Perlu konfirmasi Admin'
+                        : ($material->semester_scope === 'both' ? 'Semester 1 & 2' : 'Semester '.$material->semester_scope),
                     $ggb?->aspect ?: $column?->aspect_label,
                     $ggb?->subaspect ?: $column?->subaspect_label,
                     $column?->label ?: 'Belum dipetakan',

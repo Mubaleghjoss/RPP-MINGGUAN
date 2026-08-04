@@ -366,7 +366,8 @@ class CurriculumRevisionService
         }
         if ($domain === 'rpp' && isset($normalized['calendar_week_id'])) {
             $item = $model instanceof RppWeekItem ? $model : throw new RuntimeException('Baris RPP tidak valid.');
-            $valid = $item->plan->academicYear->weeks()->whereKey($normalized['calendar_week_id'])->where('semester', $item->plan->semester)->where('is_effective', true)->exists();
+            $week = $item->plan->academicYear->weeks()->whereKey($normalized['calendar_week_id'])->where('semester', $item->plan->semester)->first();
+            $valid = $week && app(AcademicCalendarService::class)->isEffective($item->plan, $week);
             if (! $valid) {
                 throw ValidationException::withMessages(['grid' => 'Materi hanya dapat dipindahkan ke minggu efektif.']);
             }
@@ -449,6 +450,8 @@ class CurriculumRevisionService
     {
         if ($levelIds !== []) {
             RppPlan::query()->whereIn('level_id', $levelIds)->update(['status' => 'draft', 'validated_at' => null]);
+            DB::table('rpp_annual_validations')->whereIn('level_id', $levelIds)
+                ->update(['status' => 'draft', 'validated_at' => null, 'validated_by' => null]);
         }
     }
 
@@ -458,7 +461,8 @@ class CurriculumRevisionService
         $anchors = $target->placements()->with('week')->where('is_locked', true)->get()->sortBy(fn (RppWeekItem $item) => $item->week->week_number);
         $previousEnd = (int) $target->range_start - 1;
         foreach ($anchors as $anchor) {
-            if (! $anchor->week->is_effective || (int) $anchor->week->semester !== (int) $target->plan->semester) {
+            if (! app(AcademicCalendarService::class)->isEffective($target->plan, $anchor->week)
+                || (int) $anchor->week->semester !== (int) $target->plan->semester) {
                 throw ValidationException::withMessages(['grid' => "Jangkar manual M{$anchor->week->week_number} harus berada pada minggu efektif Semester {$target->plan->semester}."]);
             }
             if ($anchor->progress_start === null || $anchor->progress_end === null
