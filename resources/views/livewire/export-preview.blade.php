@@ -123,7 +123,7 @@
         </div>
     </details>
 
-    <details x-ref="targetEditor" class="panel overflow-hidden">
+    <details id="target-editor" x-ref="targetEditor" class="panel scroll-mt-24 overflow-hidden" @if($focus === 'targets') open @endif>
         <summary class="flex min-h-14 items-center justify-between gap-3 px-4 py-3 font-semibold text-slate-950 sm:px-5">Target progres semester @if($annualTargetTotal)<span class="status status-success">Tilawati tahunan {{ $annualTargetAchieved }}/{{ $annualTargetTotal }}</span>@endif</summary>
         <div class="grid gap-5 border-t border-slate-200 p-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(320px,.8fr)] xl:p-5">
             <div class="space-y-3">

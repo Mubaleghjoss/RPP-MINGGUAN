@@ -18,6 +18,7 @@ use App\Models\SyllabusItem;
 use App\Models\User;
 use App\Services\RppAnnualGgbService;
 use App\Services\RppCompletionService;
+use App\Services\RppMaterialCatalogService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Validation\ValidationException;
 use Livewire\Livewire;
@@ -171,6 +172,135 @@ class PaudCompletionWizardTest extends TestCase
         $this->assertSame(0, app(RppCompletionService::class)->report($year, $level)['ggb']['needs_mapping']);
     }
 
+    public function test_missing_filter_matches_annual_coverage_and_schedules_all_eighty_ready_materials(): void
+    {
+        [$level, $year, $plans, $columns, $weeks] = $this->fixtureWithCatalog();
+        $user = User::factory()->create();
+        $columns->each->update(['last_edited_by' => $user->id]);
+        app(RppAnnualGgbService::class)->confirmGeneralBalanced($level, 'Pembagian GGB untuk uji cakupan', true, $user->id);
+
+        $coveredMaterials = $level->materialCatalogItems()->orderBy('sort_order')->limit(50)->get();
+        $coveredPlacement = RppWeekItem::query()->create([
+            'rpp_plan_id' => $plans[1]->id,
+            'calendar_week_id' => $weeks[1]->id,
+            'rpp_matrix_column_id' => $columns->first()->id,
+            'source_fingerprint' => 'test:annual-coverage',
+            'occurrence_no' => 1,
+            'strand' => 'Cakupan GGB',
+            'content' => 'Materi GGB yang sudah masuk',
+            'source' => 'manual',
+            'is_locked' => true,
+            'position' => 1,
+        ]);
+        $coveredPlacement->materials()->attach($coveredMaterials->pluck('id'));
+
+        $otherYear = AcademicYear::query()->create([
+            'label' => '2025/2026', 'starts_on' => '2025-07-07', 'ends_on' => '2026-07-05', 'is_active' => false,
+        ]);
+        $otherWeek = CalendarWeek::query()->create([
+            'academic_year_id' => $otherYear->id, 'week_number' => 1, 'semester' => 1,
+            'starts_on' => '2025-07-07', 'month_label' => 'Juli', 'type' => 'effective', 'is_effective' => true,
+        ]);
+        $otherPlan = RppPlan::query()->create([
+            'academic_year_id' => $otherYear->id, 'level_id' => $level->id, 'semester' => 1,
+            'status' => 'draft', 'coverage_percent' => 0,
+        ]);
+        $otherPlacement = RppWeekItem::query()->create([
+            'rpp_plan_id' => $otherPlan->id,
+            'calendar_week_id' => $otherWeek->id,
+            'rpp_matrix_column_id' => $columns->last()->id,
+            'source_fingerprint' => 'test:other-year',
+            'occurrence_no' => 1,
+            'strand' => 'Tahun lain',
+            'content' => 'Tidak memenuhi cakupan tahun aktif',
+            'source' => 'manual',
+            'is_locked' => true,
+            'position' => 1,
+        ]);
+        $otherPlacement->materials()->attach($level->materialCatalogItems()->orderBy('sort_order')->skip(50)->firstOrFail()->id);
+
+        $catalog = app(RppMaterialCatalogService::class);
+        $counts = $catalog->ggbStatusCounts($plans[1]);
+        $this->assertSame([
+            'all' => 130, 'used' => 50, 'missing' => 80, 'ready' => 80,
+            'semester' => 0, 'mapping' => 0, 'conflict' => 0,
+        ], $counts);
+        $this->assertSame(80, $catalog->coverage($plans[1])['missing']);
+        $this->assertSame(80, app(RppCompletionService::class)->report($year, $level)['ggb']['coverage']['missing']);
+
+        Livewire::actingAs($user)
+            ->withQueryParams(['level' => $level->id, 'semester' => 1])
+            ->test(ExportPreview::class)
+            ->assertSee('Lihat 80 Belum Masuk')
+            ->assertSee('ggb_status=missing', false);
+
+        $missingMaterial = $level->materialCatalogItems()->orderBy('sort_order')->skip(50)->firstOrFail();
+        $component = Livewire::actingAs($user)
+            ->withQueryParams(['level' => $level->id, 'semester' => 1, 'detail' => 'ggb', 'ggb_status' => 'missing'])
+            ->test(ExportPreview::class)
+            ->assertSet('ggbStatus', 'missing')
+            ->assertSee('Semua Materi (130)')
+            ->assertSee('Sudah Masuk RPP (50)')
+            ->assertSee('Belum Masuk RPP (80)')
+            ->assertSee('Siap Dijadwalkan (80)')
+            ->assertSee('Perlu Semester (0)')
+            ->assertSee('Perlu Konfirmasi Kolom (0)')
+            ->assertSee('Konflik Ganda (0)')
+            ->assertSee($missingMaterial->title)
+            ->assertViewHas('ggbItems', fn ($items) => $items->contains('id', $missingMaterial->id)
+                && ! $items->contains('id', $coveredMaterials->first()->id))
+            ->assertSee('80 materi GGB belum masuk RPP Semester 1 atau 2.');
+
+        $component
+            ->set('ggbReason', 'Lengkapi delapan puluh materi GGB')
+            ->call('completeAnnualGgb')
+            ->assertSee('Belum Masuk RPP (0)')
+            ->assertSee('Seluruh materi GGB sudah masuk RPP Semester 1 atau 2.');
+
+        $this->assertSame(0, $catalog->coverage($plans[1]->fresh())['missing']);
+    }
+
+    public function test_wizard_routes_calendar_syllabus_and_target_blockers_to_their_exact_panels(): void
+    {
+        [$level, $year, $plans, $columns] = $this->fixtureWithCatalog();
+        $user = User::factory()->create();
+        $columns->each->update(['last_edited_by' => $user->id]);
+        $document = SourceDocument::query()->create([
+            'level_id' => $level->id, 'source_key' => 'silabus:paud:diagnostic', 'type' => 'silabus',
+            'title' => 'Silabus PAUD Diagnostik', 'path' => 'silabus-paud.pdf', 'sha256' => str_repeat('d', 64), 'page_count' => 2,
+        ]);
+        SyllabusItem::query()->create([
+            'level_id' => $level->id, 'source_document_id' => $document->id, 'source_key' => 'silabus:paud:diagnostic:tilawati',
+            'stable_code' => 'PAUD / TILAWATI / DIAG', 'category' => 'Tilawati', 'title' => 'Tilawati PAUD',
+            'description' => 'Target diagnostik', 'allocation_text' => 'Setiap minggu', 'recommended_sessions' => 1,
+            'schedule_pattern' => 'weekly', 'schedule_pattern_source' => 'auto', 'needs_allocation' => false,
+            'is_duplicate' => false, 'source_page' => 1, 'sort_order' => 1, 'group_number' => 1,
+            'source_semester' => '1', 'semester_scope' => '1',
+        ]);
+
+        $report = app(RppCompletionService::class)->report($year, $level);
+        $semesterOne = collect($report['steps'])->firstWhere('key', 'semester_1');
+        $this->assertSame(1, $semesterOne['diagnostics']['syllabus_missing']);
+        $this->assertSame(1, $semesterOne['diagnostics']['target_issue_count']);
+        $this->assertFalse($semesterOne['diagnostics']['can_validate']);
+
+        Livewire::actingAs($user)
+            ->withQueryParams(['level' => $level->id, 'semester' => 1])
+            ->test(ExportPreview::class)
+            ->assertSee('detail=calendar', false)
+            ->assertSee('Lihat 1 Silabus')
+            ->assertSee('detail=unplanned', false)
+            ->assertSee('Perbaiki 1 Target')
+            ->assertSee('focus=targets', false);
+
+        Livewire::actingAs($user)
+            ->withQueryParams(['level' => $level->id, 'semester' => 1, 'focus' => 'targets'])
+            ->test(ExportPreview::class)
+            ->assertSet('focus', 'targets')
+            ->assertSee('id="target-editor"', false)
+            ->assertSee('open', false);
+    }
+
     public function test_completion_report_reaches_100_only_after_all_five_checks_are_complete(): void
     {
         [$level, $year, $plans, $columns, $weeks] = $this->fixtureWithCatalog();
@@ -211,6 +341,15 @@ class PaudCompletionWizardTest extends TestCase
             if ($semester === 1) {
                 $placement->materials()->attach($level->materialCatalogItems()->pluck('id'));
             }
+        }
+
+        $readyForValidation = app(RppCompletionService::class)->report($year, $level);
+        foreach ([1, 2] as $semester) {
+            $step = collect($readyForValidation['steps'])->firstWhere('key', "semester_{$semester}");
+            $this->assertTrue($step['diagnostics']['can_validate']);
+            $this->assertTrue($step['diagnostics']['validation_pending']);
+            $this->assertSame(0, $step['diagnostics']['syllabus_missing']);
+            $this->assertSame(0, $step['diagnostics']['target_issue_count']);
             $plans[$semester]->update(['status' => 'validated', 'coverage_percent' => 100, 'validated_at' => now()]);
         }
         RppAnnualValidation::query()->updateOrCreate(

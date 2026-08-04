@@ -42,8 +42,6 @@ class ExportPreview extends Component
     use InteractsWithPersistentNotifications;
     use WithPagination;
 
-    private const GGB_STATUSES = ['all', 'used', 'ready', 'semester', 'mapping', 'conflict'];
-
     #[Url(as: 'level')]
     public ?int $levelId = null;
 
@@ -58,6 +56,9 @@ class ExportPreview extends Component
 
     #[Url(as: 'ggb_search')]
     public string $ggbSearch = '';
+
+    #[Url]
+    public string $focus = '';
 
     public array $selectedGgb = [];
 
@@ -133,8 +134,11 @@ class ExportPreview extends Component
         if (! in_array($this->detail, ['', 'ggb', 'calendar'], true)) {
             $this->detail = '';
         }
-        if (! in_array($this->ggbStatus, self::GGB_STATUSES, true)) {
+        if (! in_array($this->ggbStatus, RppMaterialCatalogService::GGB_STATUSES, true)) {
             $this->ggbStatus = 'all';
+        }
+        if (! in_array($this->focus, ['', 'targets'], true)) {
+            $this->focus = '';
         }
         $this->hydrateSemesterRanges();
     }
@@ -618,13 +622,14 @@ class ExportPreview extends Component
         $completionReport = $plan->level->code === 'PAUD' ? $completion->report($plan->academicYear, $plan->level) : null;
         $balancedPreview = $plan->level->code === 'PAUD' ? $annualGgb->balancedPreview($plan->level) : null;
         $ggbItems = null;
+        $ggbStatusCounts = array_fill_keys(RppMaterialCatalogService::GGB_STATUSES, 0);
         $ggbNeedsMappingCount = 0;
         $ggbMissingColumnCount = 0;
         $ggbSuggestedColumnCount = 0;
         if ($this->detail === 'ggb') {
-            $usedScope = fn ($query) => $query->where('academic_year_id', $plan->academic_year_id)->where('level_id', $plan->level_id);
+            $ggbStatusCounts = $catalog->ggbStatusCounts($plan);
             $ggbCatalogQuery = RppMaterialCatalogItem::query()->where('level_id', $plan->level_id)->where('source_kind', 'ggb');
-            $ggbNeedsMappingCount = (clone $ggbCatalogQuery)->needsRppColumnConfirmation()->count();
+            $ggbNeedsMappingCount = $ggbStatusCounts['mapping'];
             $ggbMissingColumnCount = (clone $ggbCatalogQuery)->whereNull('rpp_matrix_column_id')->count();
             $ggbSuggestedColumnCount = (clone $ggbCatalogQuery)->whereNotNull('rpp_matrix_column_id')->needsRppColumnConfirmation()->count();
             $ggbQuery = RppMaterialCatalogItem::query()->where('level_id', $plan->level_id)->where('source_kind', 'ggb')
@@ -634,16 +639,7 @@ class ExportPreview extends Component
                 $ggbQuery->where(fn ($query) => $query->where('display_code', 'like', $needle)->orWhere('title', 'like', $needle)
                     ->orWhereHas('ggbItem', fn ($ggb) => $ggb->where('stable_code', 'like', $needle)));
             }
-            match ($this->ggbStatus) {
-                'used' => $ggbQuery->whereHas('placements.plan', $usedScope),
-                'ready' => $ggbQuery->whereDoesntHave('placements.plan', $usedScope)->where('mapping_status', 'mapped')
-                    ->whereNotNull('rpp_matrix_column_id')->whereIn('semester_scope', ['1', '2'])->where('semester_confirmed', true),
-                'semester' => $ggbQuery->where('source_semester_scope', 'general')->where('semester_confirmed', false),
-                'mapping' => $ggbQuery->needsRppColumnConfirmation(),
-                'conflict' => $ggbQuery->where('source_semester_scope', 'general')->where('semester_confirmed', false)
-                    ->needsRppColumnConfirmation(),
-                default => null,
-            };
+            $catalog->applyGgbStatus($ggbQuery, $plan, $this->ggbStatus);
             $ggbItems = $ggbQuery->orderBy('sort_order')->paginate(50, ['*'], 'ggbPage');
         }
         $calendarPreview = $this->detail === 'calendar'
@@ -708,6 +704,7 @@ class ExportPreview extends Component
             'pickerMaterials' => $pickerMaterials,
             'pickerColumn' => $pickerColumn,
             'ggbItems' => $ggbItems,
+            'ggbStatusCounts' => $ggbStatusCounts,
             'ggbNeedsMappingCount' => $ggbNeedsMappingCount,
             'ggbMissingColumnCount' => $ggbMissingColumnCount,
             'ggbSuggestedColumnCount' => $ggbSuggestedColumnCount,

@@ -26,13 +26,19 @@ class RppCompletionService
 
         $calendarStep = $this->calendarStep($year, $plans);
         $catalogQuery = $level->materialCatalogItems()->where('source_kind', 'ggb');
-        $ggbTotal = (clone $catalogQuery)->count();
-        $needsSemester = (clone $catalogQuery)
-            ->where(fn ($query) => $query->whereNotIn('semester_scope', ['1', '2'])->orWhere('semester_confirmed', false))
-            ->count();
-        $needsMapping = (clone $catalogQuery)
-            ->needsRppColumnConfirmation()
-            ->count();
+        $coveragePlan = $plans->first();
+        $ggbCounts = $coveragePlan ? $this->catalog->ggbStatusCounts($coveragePlan) : [
+            'all' => (clone $catalogQuery)->count(),
+            'used' => 0,
+            'missing' => (clone $catalogQuery)->count(),
+            'ready' => 0,
+            'semester' => (clone $catalogQuery)->where(fn ($query) => $query->whereNotIn('semester_scope', ['1', '2'])->orWhere('semester_confirmed', false))->count(),
+            'mapping' => (clone $catalogQuery)->needsRppColumnConfirmation()->count(),
+            'conflict' => 0,
+        ];
+        $ggbTotal = $ggbCounts['all'];
+        $needsSemester = $ggbCounts['semester'];
+        $needsMapping = $ggbCounts['mapping'];
         $confirmationComplete = $ggbTotal > 0 && $needsSemester === 0 && $needsMapping === 0;
         $confirmationBlockers = [];
         if ($needsSemester > 0) {
@@ -42,7 +48,6 @@ class RppCompletionService
             $confirmationBlockers[] = "{$needsMapping} materi GGB belum dikonfirmasi kolom RPP-nya.";
         }
 
-        $coveragePlan = $plans->first();
         $coverage = $coveragePlan
             ? $this->catalog->coverage($coveragePlan)
             : ['total' => $ggbTotal, 'used' => 0, 'missing' => $ggbTotal, 'percent' => 0.0];
@@ -68,6 +73,10 @@ class RppCompletionService
                     : implode(' ', $confirmationBlockers),
                 'blockers' => $confirmationBlockers,
                 'action' => 'ggb',
+                'diagnostics' => [
+                    'needs_semester' => $needsSemester,
+                    'needs_mapping' => $needsMapping,
+                ],
             ],
             [
                 'key' => 'annual_ggb',
@@ -80,6 +89,11 @@ class RppCompletionService
                     : implode(' ', $annualBlockers),
                 'blockers' => $annualBlockers,
                 'action' => 'ggb',
+                'diagnostics' => [
+                    'ggb_missing' => (int) $coverage['missing'],
+                    'ggb_ready' => (int) $ggbCounts['ready'],
+                    'annual_validation_pending' => (int) $coverage['missing'] === 0 && $annualValidation?->status !== 'validated',
+                ],
             ],
             $this->semesterStep($plans->get(1), 1),
             $this->semesterStep($plans->get(2), 2),
@@ -97,6 +111,7 @@ class RppCompletionService
                 'needs_semester' => $needsSemester,
                 'needs_mapping' => $needsMapping,
                 'coverage' => $coverage,
+                'status_counts' => $ggbCounts,
             ],
         ];
     }
@@ -139,6 +154,10 @@ class RppCompletionService
                 : implode(' ', $blockers),
             'blockers' => $blockers,
             'action' => 'calendar',
+            'diagnostics' => [
+                'semester_1_effective_weeks' => $effective[1],
+                'semester_2_effective_weeks' => $effective[2],
+            ],
         ];
     }
 
@@ -154,6 +173,12 @@ class RppCompletionService
                 'summary' => "RPP Semester {$semester} belum tersedia.",
                 'blockers' => ["RPP Semester {$semester} belum tersedia."],
                 'action' => "semester_{$semester}",
+                'diagnostics' => [
+                    'syllabus_missing' => 0,
+                    'target_issue_count' => 0,
+                    'validation_pending' => false,
+                    'can_validate' => false,
+                ],
             ];
         }
 
@@ -168,16 +193,20 @@ class RppCompletionService
         $tilawati = $targets->first(fn (RppProgressTarget $target) => str_contains(mb_strtolower((string) $target->syllabusItem?->title), 'tilawati'));
         $expected = $semester === 1 ? [1, 22] : [23, 44];
         $blockers = [];
+        $targetIssueCount = 0;
 
         if ($coverage < 100) {
             $missing = max(0, $total - $planned);
             $blockers[] = "Cakupan Silabus Semester {$semester} masih {$coverage}% ({$missing} materi belum dijadwalkan).";
         }
         if (! $tilawati) {
+            $targetIssueCount++;
             $blockers[] = "Target Tilawati Semester {$semester} belum tersedia.";
         } elseif ((int) $tilawati->range_start !== $expected[0] || (int) $tilawati->range_end !== $expected[1]) {
+            $targetIssueCount++;
             $blockers[] = "Target Tilawati Semester {$semester} harus halaman {$expected[0]}–{$expected[1]}.";
         } elseif (! $this->progress->isComplete($tilawati)) {
+            $targetIssueCount++;
             $summary = $this->progress->progressSummary($tilawati);
             $blockers[] = "Target Tilawati Semester {$semester} masih tersisa {$summary['remaining']} halaman.";
         }
@@ -185,6 +214,7 @@ class RppCompletionService
             if ($target->is($tilawati)) {
                 continue;
             }
+            $targetIssueCount++;
             $summary = $this->progress->progressSummary($target);
             $blockers[] = "Target {$target->syllabusItem?->title} masih tersisa {$summary['remaining']} {$target->unit_label}.";
         }
@@ -203,6 +233,12 @@ class RppCompletionService
                 : implode(' ', $blockers),
             'blockers' => $blockers,
             'action' => "semester_{$semester}",
+            'diagnostics' => [
+                'syllabus_missing' => $missing ?? 0,
+                'target_issue_count' => $targetIssueCount,
+                'validation_pending' => $plan->status !== 'validated',
+                'can_validate' => ($missing ?? 0) === 0 && $targetIssueCount === 0,
+            ],
         ];
     }
 }

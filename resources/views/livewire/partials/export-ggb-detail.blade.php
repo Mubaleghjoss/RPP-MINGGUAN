@@ -46,7 +46,17 @@
             </label>
             <label class="grid gap-1 text-sm font-medium text-slate-700">Status
                 <select wire:model.live="ggbStatus" class="min-h-11 rounded-xl border border-slate-300 bg-white px-3">
-                    <option value="all">Semua materi</option><option value="used">Sudah masuk</option><option value="ready">Siap dijadwalkan</option><option value="semester">Perlu semester</option><option value="mapping">Perlu Konfirmasi Kolom ({{ $ggbNeedsMappingCount }})</option><option value="conflict">Konflik ganda</option>
+                    <optgroup label="Cakupan tahunan">
+                        <option value="all">Semua Materi ({{ $ggbStatusCounts['all'] }})</option>
+                        <option value="used">Sudah Masuk RPP ({{ $ggbStatusCounts['used'] }})</option>
+                        <option value="missing">Belum Masuk RPP ({{ $ggbStatusCounts['missing'] }})</option>
+                        <option value="ready">Siap Dijadwalkan ({{ $ggbStatusCounts['ready'] }})</option>
+                    </optgroup>
+                    <optgroup label="Perlu konfirmasi Admin">
+                        <option value="semester">Perlu Semester ({{ $ggbStatusCounts['semester'] }})</option>
+                        <option value="mapping">Perlu Konfirmasi Kolom ({{ $ggbStatusCounts['mapping'] }})</option>
+                        <option value="conflict">Konflik Ganda ({{ $ggbStatusCounts['conflict'] }})</option>
+                    </optgroup>
                 </select>
             </label>
             <div class="flex flex-wrap gap-2">
@@ -63,6 +73,16 @@
                 @else
                     <p class="font-semibold">Semua kolom RPP sudah dikonfirmasi.</p>
                     <p class="mt-1 text-sm">Tidak ada materi yang tersisa pada filter ini.</p>
+                @endif
+            </div>
+        @elseif($ggbStatus === 'missing')
+            <div @class(['mt-4 rounded-xl p-4 ring-1', 'bg-amber-50 text-amber-950 ring-amber-300' => $ggbStatusCounts['missing'] > 0, 'bg-emerald-50 text-emerald-950 ring-emerald-300' => $ggbStatusCounts['missing'] === 0]) role="status">
+                @if($ggbStatusCounts['missing'] > 0)
+                    <p class="font-semibold">{{ $ggbStatusCounts['missing'] }} materi GGB belum masuk RPP Semester 1 atau 2.</p>
+                    <p class="mt-1 text-sm leading-6"><strong>{{ $ggbStatusCounts['ready'] }}</strong> siap dijadwalkan dan <strong>{{ max(0, $ggbStatusCounts['missing'] - $ggbStatusCounts['ready']) }}</strong> masih memerlukan konfirmasi. Isi alasan tindakan, lalu tekan <strong>Lengkapi GGB 1 Tahun</strong> untuk memproses seluruh materi yang siap; checkbox tidak wajib untuk penyusunan otomatis.</p>
+                @else
+                    <p class="font-semibold">Seluruh materi GGB sudah masuk RPP.</p>
+                    <p class="mt-1 text-sm">Tidak ada materi yang tersisa pada filter cakupan tahunan ini.</p>
                 @endif
             </div>
         @endif
@@ -113,7 +133,7 @@
                         <td class="text-xs">{{ $material->ggbItem?->document?->title }}<span class="mt-1 block">Hlm. {{ $material->ggbItem?->source_page }} · {{ $material->ggbItem?->stable_code }}</span></td>
                         <td class="text-xs">{{ $annualPlacements->map(fn($placement) => 'S'.$placement->plan?->semester.' M'.$placement->week?->week_number)->unique()->implode(', ') ?: 'Belum digunakan' }}</td>
                     </tr>
-                @empty<tr><td colspan="8" class="p-8 text-center text-slate-600">{{ $ggbStatus === 'mapping' ? 'Semua kolom RPP sudah dikonfirmasi. Tidak ada materi yang tersisa pada filter ini.' : 'Tidak ada materi yang cocok dengan filter.' }}</td></tr>@endforelse
+                @empty<tr><td colspan="8" class="p-8 text-center text-slate-600">@if($ggbStatus === 'mapping')Semua kolom RPP sudah dikonfirmasi. Tidak ada materi yang tersisa pada filter ini.@elseif($ggbStatus === 'missing')Seluruh materi GGB sudah masuk RPP Semester 1 atau 2.@else Tidak ada materi yang cocok dengan filter.@endif</td></tr>@endforelse
             </tbody>
         </table>
     </div>

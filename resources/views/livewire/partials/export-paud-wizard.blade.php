@@ -20,6 +20,7 @@
 
     <ol class="divide-y divide-slate-200">
         @foreach($completionReport['steps'] as $index => $step)
+            @php($diagnostics = $step['diagnostics'] ?? [])
             <li class="grid gap-3 p-4 sm:p-5 lg:grid-cols-[44px_minmax(0,1fr)_auto] lg:items-center">
                 <span @class(['flex size-11 items-center justify-center rounded-full text-sm font-bold ring-1', 'bg-emerald-100 text-emerald-800 ring-emerald-300' => $step['complete'], 'bg-amber-50 text-amber-900 ring-amber-300' => ! $step['complete']]) aria-hidden="true">{{ $index + 1 }}</span>
                 <div class="min-w-0">
@@ -28,7 +29,7 @@
                 </div>
                 <div class="flex flex-wrap gap-2 lg:justify-end">
                     @if($step['action'] === 'calendar')
-                        <button type="button" wire:click="showDetail('calendar')" class="button-secondary">Atur Waktu</button>
+                        <a href="{{ route('exports.index', ['level' => $plan->level_id, 'semester' => $semester, 'detail' => 'calendar']) }}#calendar-detail" class="button-secondary">Atur Waktu</a>
                     @elseif($step['key'] === 'ggb_confirmation')
                         @if($completionReport['ggb']['needs_semester'] > 0)
                             <a href="{{ route('exports.index', ['level' => $plan->level_id, 'semester' => $semester, 'detail' => 'ggb', 'ggb_status' => 'semester']) }}#ggb-detail" class="button-secondary">Lihat {{ $completionReport['ggb']['needs_semester'] }} Perlu Semester</a>
@@ -39,14 +40,26 @@
                         @if($completionReport['ggb']['needs_semester'] === 0 && $completionReport['ggb']['needs_mapping'] === 0)
                             <a href="{{ route('exports.index', ['level' => $plan->level_id, 'semester' => $semester, 'detail' => 'ggb']) }}#ggb-detail" class="button-secondary">Buka Daftar GGB</a>
                         @endif
-                    @elseif($step['action'] === 'ggb')
-                        <a href="{{ route('exports.index', ['level' => $plan->level_id, 'semester' => $semester, 'detail' => 'ggb']) }}#ggb-detail" class="button-secondary">Buka Daftar GGB</a>
+                    @elseif($step['key'] === 'annual_ggb')
+                        @if(($diagnostics['ggb_missing'] ?? 0) > 0)
+                            <a href="{{ route('exports.index', ['level' => $plan->level_id, 'semester' => $semester, 'detail' => 'ggb', 'ggb_status' => 'missing']) }}#ggb-detail" class="button-secondary">Lihat {{ $diagnostics['ggb_missing'] }} Belum Masuk</a>
+                        @elseif($diagnostics['annual_validation_pending'] ?? false)
+                            <button type="button" wire:click="validateAnnualGgb" wire:loading.attr="disabled" wire:target="validateAnnualGgb" class="button-secondary"><span wire:loading.remove wire:target="validateAnnualGgb">Validasi GGB Tahunan</span><span wire:loading wire:target="validateAnnualGgb">Memvalidasi…</span></button>
+                        @else
+                            <a href="{{ route('exports.index', ['level' => $plan->level_id, 'semester' => $semester, 'detail' => 'ggb']) }}#ggb-detail" class="button-secondary">Buka Daftar GGB</a>
+                        @endif
                     @elseif($step['action'] === 'semester_1' || $step['action'] === 'semester_2')
                         @php($stepSemester = $step['action'] === 'semester_1' ? 1 : 2)
-                        <button type="button" wire:click="selectSemester({{ $stepSemester }})" class="button-secondary">Buka Semester {{ $stepSemester }}</button>
-                        @unless($step['complete'])
+                        <a href="{{ route('exports.index', ['level' => $plan->level_id, 'semester' => $stepSemester]) }}#preview-heading" class="button-secondary">Buka Semester {{ $stepSemester }}</a>
+                        @if(($diagnostics['syllabus_missing'] ?? 0) > 0)
+                            <a href="{{ route('planner.show', ['level' => $plan->level_id, 'semester' => $stepSemester, 'detail' => 'unplanned']) }}#planner-detail" class="button-secondary">Lihat {{ $diagnostics['syllabus_missing'] }} Silabus</a>
+                        @endif
+                        @if(($diagnostics['target_issue_count'] ?? 0) > 0)
+                            <a href="{{ route('exports.index', ['level' => $plan->level_id, 'semester' => $stepSemester, 'focus' => 'targets']) }}#target-editor" class="button-secondary">Perbaiki {{ $diagnostics['target_issue_count'] }} Target</a>
+                        @endif
+                        @if(($diagnostics['validation_pending'] ?? false) && ($diagnostics['can_validate'] ?? false))
                             <button type="button" wire:click="validatePaudSemester({{ $stepSemester }})" wire:loading.attr="disabled" wire:target="validatePaudSemester({{ $stepSemester }})" class="button-secondary"><span wire:loading.remove wire:target="validatePaudSemester({{ $stepSemester }})">Validasi Semester {{ $stepSemester }}</span><span wire:loading wire:target="validatePaudSemester({{ $stepSemester }})">Memeriksa…</span></button>
-                        @endunless
+                        @endif
                     @endif
                 </div>
             </li>

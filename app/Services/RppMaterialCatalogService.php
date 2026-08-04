@@ -8,12 +8,15 @@ use App\Models\RppMaterialCatalogItem;
 use App\Models\RppPlan;
 use App\Models\RppWeekItem;
 use App\Models\SyllabusItem;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class RppMaterialCatalogService
 {
+    public const GGB_STATUSES = ['all', 'used', 'missing', 'ready', 'semester', 'mapping', 'conflict'];
+
     private array $catalogMaps = [];
 
     private array $usedCodes = [];
@@ -190,11 +193,8 @@ class RppMaterialCatalogService
 
     public function coverage(RppPlan $plan): array
     {
-        $query = RppMaterialCatalogItem::query()->where('level_id', $plan->level_id)->where('source_kind', 'ggb');
-        $total = (clone $query)->count();
-        $used = (clone $query)->whereHas('placements.plan', fn ($annualPlan) => $annualPlan
-            ->where('academic_year_id', $plan->academic_year_id)
-            ->where('level_id', $plan->level_id))->count();
+        $query = $this->ggbQuery($plan);
+        $counts = $this->ggbStatusCounts($plan);
         $semesterUsed = collect([1, 2])->mapWithKeys(fn ($semester) => [$semester => (clone $query)
             ->whereHas('placements.plan', fn ($annualPlan) => $annualPlan
                 ->where('academic_year_id', $plan->academic_year_id)
@@ -202,12 +202,55 @@ class RppMaterialCatalogService
                 ->where('semester', $semester))->count()]);
 
         return [
-            'total' => $total,
-            'used' => $used,
-            'missing' => max(0, $total - $used),
-            'percent' => $total ? round(($used / $total) * 100, 2) : 100.0,
+            'total' => $counts['all'],
+            'used' => $counts['used'],
+            'missing' => $counts['missing'],
+            'percent' => $counts['all'] ? round(($counts['used'] / $counts['all']) * 100, 2) : 100.0,
             'semester_used' => $semesterUsed->all(),
         ];
+    }
+
+    public function ggbStatusCounts(RppPlan $plan): array
+    {
+        $query = $this->ggbQuery($plan);
+
+        return collect(self::GGB_STATUSES)->mapWithKeys(fn (string $status) => [
+            $status => $this->applyGgbStatus(clone $query, $plan, $status)->count(),
+        ])->all();
+    }
+
+    public function applyGgbStatus(Builder $query, RppPlan $plan, string $status): Builder
+    {
+        $annualPlanScope = fn (Builder $annualPlan) => $annualPlan
+            ->where('academic_year_id', $plan->academic_year_id)
+            ->where('level_id', $plan->level_id);
+        $needsSemester = fn (Builder $material) => $material
+            ->whereNotIn('semester_scope', ['1', '2'])
+            ->orWhere('semester_confirmed', false);
+
+        return match ($status) {
+            'used' => $query->whereHas('placements.plan', $annualPlanScope),
+            'missing' => $query->whereDoesntHave('placements.plan', $annualPlanScope),
+            'ready' => $query->whereDoesntHave('placements.plan', $annualPlanScope)
+                ->where('mapping_status', 'mapped')
+                ->whereNotNull('rpp_matrix_column_id')
+                ->whereIn('semester_scope', ['1', '2'])
+                ->where(fn (Builder $material) => $material
+                    ->where('source_semester_scope', '!=', 'general')
+                    ->orWhere('semester_confirmed', true))
+                ->whereHas('matrixColumn', fn (Builder $column) => $column->where('is_active', true)),
+            'semester' => $query->where($needsSemester),
+            'mapping' => $query->needsRppColumnConfirmation(),
+            'conflict' => $query->where($needsSemester)->needsRppColumnConfirmation(),
+            default => $query,
+        };
+    }
+
+    private function ggbQuery(RppPlan $plan): Builder
+    {
+        return RppMaterialCatalogItem::query()
+            ->where('level_id', $plan->level_id)
+            ->where('source_kind', 'ggb');
     }
 
     public function headerTree(Collection $columns): Collection
