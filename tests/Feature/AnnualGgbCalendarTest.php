@@ -251,18 +251,27 @@ class AnnualGgbCalendarTest extends TestCase
 
         Livewire::actingAs($user)->withQueryParams(['level' => $level->id, 'semester' => 1, 'detail' => 'calendar'])
             ->test(ExportPreview::class)
+            ->assertSee('Lengkapi judul kegiatan terlebih dahulu.')
+            ->assertSee('Menghitung dampak kalender…')
+            ->assertSee('Menyimpan rentang aktif…')
+            ->assertSeeHtml('wire:loading.delay.longer')
+            ->assertSeeHtml('aria-describedby="calendar-submit-status"')
             ->set('calendarTitle', 'Libur sinkronisasi')
             ->set('calendarStartsOn', '2026-07-06')
             ->set('calendarEndsOn', '2026-07-12')
             ->assertSet('calendarImpact.ready', true)
             ->assertSet('calendarImpact.requires_confirmation', true)
+            ->assertSee('Centang persetujuan dampak setelah memeriksa materi yang akan bergeser.')
             ->set('calendarConfirmImpact', true)
             ->assertSet('calendarConfirmImpact', true)
+            ->assertSee('Formulir siap disimpan. Klik tombol untuk mengaktifkan rentang.')
             ->set('calendarEndsOn', '2026-07-19')
             ->assertSet('calendarConfirmImpact', false)
             ->assertSet('calendarImpact.ready', true)
+            ->assertSee('Centang persetujuan dampak setelah memeriksa materi yang akan bergeser.')
             ->set('calendarConfirmImpact', true)
             ->call('saveCalendarEvent')
+            ->assertSee('Libur sinkronisasi')
             ->assertDispatched('app-notification', function (string $name, array $params): bool {
                 $notification = $params['notification'] ?? [];
 
@@ -278,6 +287,50 @@ class AnnualGgbCalendarTest extends TestCase
             'starts_on' => '2026-07-06 00:00:00',
             'ends_on' => '2026-07-19 00:00:00',
         ]);
+        $this->assertDatabaseCount('calendar_events', 1);
+    }
+
+    public function test_matrix_item_alpine_payload_survives_quotes_backslashes_newlines_and_unicode(): void
+    {
+        [$level, $year, $plans, $weeks, $column, $syllabus] = $this->fixture();
+        $syllabus->update(['stable_code' => 'UJI \\ TILAWATI / "kutip" / apostrof \'']);
+        $this->placement(
+            $plans[1],
+            $weeks[0],
+            $column,
+            $syllabus,
+            false,
+            "Tilawati \\ halaman '1' \"khusus\"\nDoa: رَبِّ زِدْنِي عِلْمًا",
+        );
+        $user = User::factory()->create();
+
+        $html = Livewire::actingAs($user)
+            ->withQueryParams(['level' => $level->id, 'semester' => 1])
+            ->test(ExportPreview::class)
+            ->html();
+        $dom = new \DOMDocument('1.0', 'UTF-8');
+        $previousErrors = libxml_use_internal_errors(true);
+        $loaded = $dom->loadHTML('<!doctype html><html><body>'.$html.'</body></html>');
+        libxml_clear_errors();
+        libxml_use_internal_errors($previousErrors);
+
+        $this->assertTrue($loaded);
+        $buttons = [];
+        foreach ($dom->getElementsByTagName('button') as $button) {
+            if (str_contains($button->getAttribute('x-on:click'), 'openMatrixItem')) {
+                $buttons[] = $button;
+            }
+        }
+        $this->assertCount(2, $buttons);
+
+        foreach ($buttons as $button) {
+            $expression = $button->getAttribute('x-on:click');
+            $this->assertStringStartsWith("openMatrixItem(JSON.parse('", $expression);
+            $this->assertStringEndsWith("'))", $expression);
+            $this->assertStringContainsString('\\u0022', $expression);
+            $this->assertStringContainsString('\\\\', $expression);
+            $this->assertStringContainsString('\\u062', $expression);
+        }
     }
 
     public function test_application_and_notification_timestamp_use_asia_jakarta(): void

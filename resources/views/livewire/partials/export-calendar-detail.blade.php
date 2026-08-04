@@ -30,7 +30,7 @@
             @endif
             <button type="submit" wire:loading.attr="disabled" wire:target="saveSemesterRanges" class="button-secondary mt-4"><span wire:loading.remove wire:target="saveSemesterRanges">Simpan rentang semester</span><span wire:loading wire:target="saveSemesterRanges">Menyimpan…</span></button>
         </form>
-        <form wire:submit="saveCalendarEvent" class="rounded-xl bg-white p-4 ring-1 ring-slate-200">
+        <form wire:submit="saveCalendarEvent" wire:loading.attr="aria-busy" class="rounded-xl bg-white p-4 ring-1 ring-slate-200">
             <div class="flex items-center justify-between gap-3"><h3 class="font-semibold text-slate-950">{{ $calendarEventId ? 'Edit' : 'Tambah' }} rentang kegiatan</h3>@if($calendarEventId)<button type="button" wire:click="resetCalendarForm" class="min-h-11 text-sm font-semibold text-emerald-700">Batal edit</button>@endif</div>
             <div class="mt-4 grid gap-3 sm:grid-cols-2">
                 <label class="grid gap-1 text-sm font-medium text-slate-700">Jenis<select wire:model.change="calendarType" data-validation-field="calendarType" class="min-h-11 rounded-xl border border-slate-300 bg-white px-3"><option value="holiday">Libur</option><option value="religious_holiday">Hari Raya</option><option value="evaluation">Evaluasi</option><option value="exam">Ujian</option></select>@error('calendarType')<span class="text-sm font-medium text-red-700" role="alert">{{ $message }}</span>@enderror</label>
@@ -41,16 +41,41 @@
             </div>
             <label class="mt-3 flex min-h-11 items-center gap-3 rounded-xl border border-slate-200 px-3"><input type="checkbox" wire:model.live="calendarAllLevels" class="size-5 rounded border-slate-300 text-emerald-700"><span class="text-sm font-medium text-slate-700">Berlaku untuk semua jenjang</span></label>
             @if(! $calendarAllLevels)<fieldset class="mt-3" data-validation-field="calendarLevelIds" tabindex="-1"><legend class="text-sm font-medium text-slate-700">Pilih jenjang</legend><div class="mt-2 grid max-h-44 gap-1 overflow-y-auto rounded-xl border border-slate-200 p-2 sm:grid-cols-2">@foreach($levels as $level)<label class="flex min-h-11 items-center gap-2 rounded-lg px-2 hover:bg-slate-50"><input type="checkbox" wire:model.live="calendarLevelIds" value="{{ $level->id }}" class="size-5 rounded border-slate-300 text-emerald-700"><span class="text-sm">{{ $level->name }}</span></label>@endforeach</div>@error('calendarLevelIds')<p class="mt-1 text-sm font-medium text-red-700" role="alert">{{ $message }}</p>@enderror</fieldset>@endif
-            <p wire:loading wire:target="calendarTitle,calendarStartsOn,calendarEndsOn,calendarAllLevels,calendarLevelIds,calendarConfirmImpact,refreshCalendarImpact" class="mt-4 rounded-xl bg-sky-50 p-3 text-sm font-semibold text-sky-900 ring-1 ring-sky-200" role="status">Menghitung dampak dan menyinkronkan formulir...</p>
             @if($calendarPreview && $calendarPreview['ready'])
                 <div class="mt-4 rounded-xl bg-amber-50 p-4 ring-1 ring-amber-200" aria-live="polite"><p class="font-semibold text-amber-950">Dampak sebelum disimpan</p><dl class="mt-2 grid grid-cols-2 gap-2 text-sm sm:grid-cols-3"><div><dt class="text-amber-800">Pekan non-efektif</dt><dd class="font-mono font-semibold">{{ $calendarPreview['week_count'] }}</dd></div><div><dt class="text-amber-800">RPP terdampak</dt><dd class="font-mono font-semibold">{{ $calendarPreview['plan_count'] }}</dd></div><div><dt class="text-amber-800">Materi pada rentang</dt><dd class="font-mono font-semibold">{{ $calendarPreview['item_count'] }}</dd></div><div><dt class="text-amber-800">Total materi bergeser</dt><dd class="font-mono font-semibold">{{ $calendarPreview['moved_count'] }}</dd></div><div><dt class="text-amber-800">Materi terkunci bergeser</dt><dd class="font-mono font-semibold">{{ $calendarPreview['shifted_locked_count'] }}</dd></div><div><dt class="text-amber-800">Kelompok digabung</dt><dd class="font-mono font-semibold">{{ $calendarPreview['combined_groups'] }}</dd></div></dl>
                     @if($calendarPreview['shortage_count'] > 0)<p class="mt-3 text-sm font-medium text-red-800">Acara ini membuat semester tanpa minggu efektif. Kurangi rentang acara atau perpanjang semester.</p>@elseif($calendarPreview['requires_confirmation'])<label class="mt-3 flex min-h-11 items-center gap-3"><input type="checkbox" wire:model.live="calendarConfirmImpact" data-validation-field="calendarConfirmImpact" class="size-5 rounded border-amber-400 text-emerald-700"><span class="text-sm font-semibold text-amber-950">Saya menyetujui pergeseran/penggabungan materi, termasuk yang terkunci.</span></label>@error('calendarConfirmImpact')<p class="mt-1 text-sm font-medium text-red-700" role="alert">{{ $message }}</p>@enderror@endif
                 </div>
             @endif
-            <button type="submit" wire:loading.attr="disabled" @disabled(! $calendarSubmitReady) class="button-primary mt-4 disabled:cursor-not-allowed disabled:opacity-60"><span wire:loading.remove wire:target="saveCalendarEvent">Simpan dan aktifkan rentang</span><span wire:loading wire:target="saveCalendarEvent">Memperbarui {{ $calendarPreview ? $calendarPreview['plan_count'] : 0 }} jenjang...</span></button>
+            <div id="calendar-submit-status" @class([
+                'mt-4 rounded-xl px-3 py-2.5 text-sm font-medium ring-1',
+                'bg-sky-50 text-sky-900 ring-sky-200' => $calendarSubmitState['tone'] === 'info',
+                'bg-amber-50 text-amber-950 ring-amber-200' => $calendarSubmitState['tone'] === 'warning',
+                'bg-red-50 text-red-800 ring-red-200' => $calendarSubmitState['tone'] === 'error',
+                'bg-emerald-50 text-emerald-900 ring-emerald-200' => $calendarSubmitState['tone'] === 'success',
+            ]) role="status" aria-live="polite">
+                <span class="font-semibold">Status penyimpanan:</span> {{ $calendarSubmitState['message'] }}
+            </div>
+            <button type="submit" wire:loading.attr="disabled" aria-describedby="calendar-submit-status" @disabled(! $calendarSubmitReady) class="button-primary mt-4 disabled:cursor-not-allowed disabled:opacity-60"><span wire:loading.remove wire:target="saveCalendarEvent">Simpan dan aktifkan rentang</span><span wire:loading wire:target="saveCalendarEvent">Memperbarui {{ $calendarPreview ? $calendarPreview['plan_count'] : 0 }} jenjang...</span></button>
         </form>
     </div>
     <div class="border-t border-slate-200 p-4 sm:p-5">
         <h3 class="font-semibold text-slate-950">Rentang aktif</h3><div class="mt-3 grid gap-3 lg:grid-cols-2">@forelse($calendarEvents as $event)<article class="rounded-xl border border-slate-200 p-4"><div class="flex items-start justify-between gap-3"><div><span class="status status-warning">{{ app(\App\Services\AcademicCalendarService::class)->typeLabel($event->type) }}</span><h4 class="mt-2 font-semibold text-slate-950">{{ $event->title }}</h4><p class="mt-1 font-mono text-xs text-slate-600">{{ $event->starts_on->format('d/m/Y') }}–{{ $event->ends_on->format('d/m/Y') }}</p></div><div class="flex gap-2"><button type="button" wire:click="editCalendarEvent({{ $event->id }})" class="button-secondary">Edit</button><button type="button" wire:click="deleteCalendarEvent({{ $event->id }})" wire:confirm="Hapus rentang ini? Materi tidak akan ditarik mundur otomatis." class="button-secondary text-red-700">Hapus</button></div></div>@if($event->details)<p class="mt-3 text-sm text-slate-600">{{ $event->details }}</p>@endif<p class="mt-2 text-xs font-medium text-slate-500">{{ $event->applies_to_all ? 'Semua jenjang' : $event->levels->pluck('name')->implode(', ') }}</p></article>@empty<p class="rounded-xl bg-slate-50 p-5 text-sm text-slate-600 ring-1 ring-slate-200">Belum ada rentang libur, evaluasi, atau ujian.</p>@endforelse</div>
+    </div>
+
+    <div wire:loading.delay.longer wire:target="calendarTitle,calendarStartsOn,calendarEndsOn,calendarAllLevels,calendarLevelIds,calendarConfirmImpact,refreshCalendarImpact" class="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/55 p-4" role="status" aria-live="polite" aria-atomic="true">
+        <div class="w-full max-w-md rounded-2xl bg-white p-6 text-center shadow-2xl ring-1 ring-slate-200">
+            <svg class="mx-auto size-8 animate-spin text-emerald-700 motion-reduce:animate-none" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle class="opacity-25" cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3"></circle><path class="opacity-90" fill="currentColor" d="M21 12a9 9 0 0 0-9-9v3a6 6 0 0 1 6 6h3Z"></path></svg>
+            <p class="mt-4 text-lg font-semibold text-slate-950">Menghitung dampak kalender…</p>
+            <p class="mt-2 text-sm leading-6 text-slate-600">Sistem sedang menyinkronkan formulir dan memeriksa RPP yang terdampak. Jangan menutup atau menyegarkan halaman.</p>
+        </div>
+    </div>
+
+    <div wire:loading.delay.longer wire:target="saveCalendarEvent" class="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/55 p-4" role="status" aria-live="polite" aria-atomic="true">
+        <div class="w-full max-w-md rounded-2xl bg-white p-6 text-center shadow-2xl ring-1 ring-slate-200">
+            <svg class="mx-auto size-8 animate-spin text-emerald-700 motion-reduce:animate-none" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle class="opacity-25" cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3"></circle><path class="opacity-90" fill="currentColor" d="M21 12a9 9 0 0 0-9-9v3a6 6 0 0 1 6 6h3Z"></path></svg>
+            <p class="mt-4 text-lg font-semibold text-slate-950">Menyimpan rentang aktif…</p>
+            <p class="mt-2 text-sm leading-6 text-slate-600">Memperbarui {{ number_format((int) ($calendarPreview['plan_count'] ?? 0), 0, ',', '.') }} RPP dan menggeser {{ number_format((int) ($calendarPreview['moved_count'] ?? 0), 0, ',', '.') }} materi. Proses ini dapat memerlukan beberapa detik.</p>
+            <p class="mt-2 text-xs font-medium text-slate-500">Jangan klik ulang, menutup, atau menyegarkan halaman sampai notifikasi hasil muncul.</p>
+        </div>
     </div>
 </section>

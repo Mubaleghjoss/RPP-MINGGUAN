@@ -876,6 +876,7 @@ class ExportPreview extends Component
         $matrixStats = $matrixFill->stats($plan);
         $activities = RppMaterialCatalogItem::query()->where('level_id', $plan->level_id)
             ->where('source_kind', 'activity')->with('matrixColumn')->orderBy('sort_order')->orderBy('id')->get();
+        $calendarSubmitState = $this->calendarSubmitState();
 
         return view('livewire.export-preview', [
             'levels' => Level::query()->orderBy('sort_order')->get(),
@@ -911,7 +912,8 @@ class ExportPreview extends Component
             'annualValidation' => $annualValidation,
             'calendarEvents' => $plan->academicYear->calendarEvents()->with('levels:id,name,code')->orderBy('starts_on')->get(),
             'calendarPreview' => $calendarPreview,
-            'calendarSubmitReady' => $this->calendarSubmitReady(),
+            'calendarSubmitReady' => $calendarSubmitState['ready'],
+            'calendarSubmitState' => $calendarSubmitState,
             'semesterPreview' => $semesterPreview,
             'completionReport' => $completionReport,
             'balancedPreview' => $balancedPreview,
@@ -978,20 +980,33 @@ class ExportPreview extends Component
         ];
     }
 
-    private function calendarSubmitReady(): bool
+    private function calendarSubmitState(): array
     {
-        $scopeReady = $this->calendarAllLevels || $this->calendarLevelIds !== [];
-        $impactReady = (bool) ($this->calendarImpact['ready'] ?? false)
-            && (int) ($this->calendarImpact['shortage_count'] ?? 0) === 0;
-        $confirmationReady = ! ($this->calendarImpact['requires_confirmation'] ?? false)
-            || $this->calendarConfirmImpact;
+        if (! filled(trim($this->calendarTitle))) {
+            return ['ready' => false, 'tone' => 'warning', 'message' => 'Lengkapi judul kegiatan terlebih dahulu.'];
+        }
 
-        return filled(trim($this->calendarTitle))
-            && filled($this->calendarStartsOn)
-            && filled($this->calendarEndsOn)
-            && $scopeReady
-            && $impactReady
-            && $confirmationReady;
+        if (! filled($this->calendarStartsOn) || ! filled($this->calendarEndsOn)) {
+            return ['ready' => false, 'tone' => 'warning', 'message' => 'Lengkapi tanggal mulai dan tanggal akhir untuk menghitung dampak.'];
+        }
+
+        if (! $this->calendarAllLevels && $this->calendarLevelIds === []) {
+            return ['ready' => false, 'tone' => 'warning', 'message' => 'Pilih minimal satu jenjang yang akan menggunakan rentang ini.'];
+        }
+
+        if (! ($this->calendarImpact['ready'] ?? false)) {
+            return ['ready' => false, 'tone' => 'info', 'message' => 'Dampak kalender sedang dihitung. Tunggu sampai ringkasan dampak muncul.'];
+        }
+
+        if ((int) ($this->calendarImpact['shortage_count'] ?? 0) > 0) {
+            return ['ready' => false, 'tone' => 'error', 'message' => 'Minggu efektif tidak mencukupi. Kurangi rentang kegiatan atau perpanjang semester.'];
+        }
+
+        if (($this->calendarImpact['requires_confirmation'] ?? false) && ! $this->calendarConfirmImpact) {
+            return ['ready' => false, 'tone' => 'warning', 'message' => 'Centang persetujuan dampak setelah memeriksa materi yang akan bergeser.'];
+        }
+
+        return ['ready' => true, 'tone' => 'success', 'message' => 'Formulir siap disimpan. Klik tombol untuk mengaktifkan rentang.'];
     }
 
     private function assertLevel(): void
