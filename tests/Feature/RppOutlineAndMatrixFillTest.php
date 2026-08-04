@@ -18,6 +18,7 @@ use App\Services\RppMaterialCatalogService;
 use App\Services\RppMaterialPlacementService;
 use App\Services\RppMatrixFillService;
 use App\Services\RppMatrixPresetService;
+use App\Services\RppReadinessRepairService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -83,6 +84,74 @@ class RppOutlineAndMatrixFillTest extends TestCase
         $this->assertSame(4, $plan->items()->count());
         $this->assertSame(1, $plan->items()->where('source', 'reinforcement_auto')->count());
         $this->assertSame(2, $plan->items()->where('source', 'activity_auto')->count());
+    }
+
+    public function test_readiness_repair_keeps_manual_activity_cleans_legacy_heading_links_and_fills_gaps_idempotently(): void
+    {
+        [$level] = $this->levelAndDocument();
+        $year = AcademicYear::query()->create(['label' => '2026/2027', 'starts_on' => '2026-07-06', 'ends_on' => '2027-07-04', 'is_active' => true]);
+        $weekOne = $this->week($year, 1, '2026-07-06', true);
+        $this->week($year, 2, '2026-07-13', true);
+        $plan = RppPlan::query()->create(['academic_year_id' => $year->id, 'level_id' => $level->id, 'semester' => 1, 'status' => 'validated', 'validated_at' => now()]);
+        RppPlan::query()->create(['academic_year_id' => $year->id, 'level_id' => $level->id, 'semester' => 2, 'status' => 'draft']);
+        $column = RppMatrixColumn::query()->create([
+            'level_id' => $level->id, 'stable_key' => 'activity', 'aspect_label' => 'IV. Pengembangan',
+            'subaspect_label' => 'B. Ekstrakurikuler', 'label' => 'Ekstrakurikuler',
+            'sort_order' => 1, 'width' => 24, 'is_active' => true,
+        ]);
+        $heading = RppMaterialCatalogItem::query()->create([
+            'level_id' => $level->id, 'rpp_matrix_column_id' => $column->id, 'source_kind' => 'ggb',
+            'is_schedulable' => false, 'display_code' => 'Pengembangan 00', 'title' => 'Ekstrakurikuler',
+            'semester_scope' => 'both', 'source_semester_scope' => 'general', 'semester_confirmed' => true,
+            'auto_include' => false, 'is_active' => true, 'rotation_enabled' => false,
+            'origin_key' => 'ggb:heading:ekstrakurikuler', 'mapping_status' => 'mapped', 'sort_order' => 1,
+        ]);
+        $activity = RppMaterialCatalogItem::query()->create([
+            'level_id' => $level->id, 'rpp_matrix_column_id' => $column->id, 'source_kind' => 'activity',
+            'is_schedulable' => true, 'display_code' => 'Ekstrakurikuler 01', 'title' => 'Pramuka',
+            'semester_scope' => 'both', 'source_semester_scope' => 'general', 'semester_confirmed' => true,
+            'auto_include' => false, 'is_active' => true, 'rotation_enabled' => true,
+            'origin_key' => 'activity:test:pramuka', 'mapping_status' => 'mapped', 'sort_order' => 2,
+        ]);
+        $missingGgb = RppMaterialCatalogItem::query()->create([
+            'level_id' => $level->id, 'rpp_matrix_column_id' => $column->id, 'source_kind' => 'ggb',
+            'is_schedulable' => true, 'display_code' => 'Pengembangan 01', 'title' => 'Kerja sama dalam kegiatan',
+            'semester_scope' => '1', 'source_semester_scope' => 'general', 'semester_confirmed' => true,
+            'auto_include' => true, 'is_active' => true, 'rotation_enabled' => false,
+            'origin_key' => 'ggb:material:kerja-sama', 'mapping_status' => 'mapped', 'sort_order' => 3,
+        ]);
+        $manual = RppWeekItem::query()->create([
+            'rpp_plan_id' => $plan->id, 'calendar_week_id' => $weekOne->id, 'syllabus_item_id' => null,
+            'source_fingerprint' => 'manual:activity', 'occurrence_no' => 1,
+            'rpp_matrix_column_id' => $column->id, 'strand' => $column->label,
+            'content' => 'Pramuka dan kegiatan lapangan', 'source' => 'manual', 'is_locked' => true,
+            'position' => 1, 'lock_version' => 0,
+        ]);
+        $manual->materials()->attach($heading->id);
+
+        $service = app(RppReadinessRepairService::class);
+        $preview = $service->preview($year, $level);
+        $this->assertSame(1, $preview['legacy_links']);
+        $this->assertSame(0, $preview['invalid_placements']);
+        $this->assertSame(1, $preview['matrix_gaps']);
+
+        $result = $service->repair($year, $level);
+        $this->assertSame(1, $result['legacy_links_removed']);
+        $this->assertSame(0, $result['placements_removed']);
+        $this->assertSame(1, $result['matrix_gaps_filled']);
+        $this->assertSame(1, $result['ggb_placements_restored']);
+        $this->assertDatabaseHas('rpp_week_items', ['id' => $manual->id, 'content' => 'Pramuka dan kegiatan lapangan', 'is_locked' => true]);
+        $this->assertFalse($manual->fresh()->materials()->whereKey($heading->id)->exists());
+        $this->assertTrue($manual->fresh()->materials()->whereKey($activity->id)->exists());
+        $this->assertTrue($missingGgb->placements()->where('rpp_plan_id', $plan->id)->exists());
+        $this->assertSame(0, $service->preview($year, $level)['matrix_gaps']);
+
+        $repeat = $service->repair($year, $level);
+        $this->assertSame(0, $repeat['legacy_links_removed']);
+        $this->assertSame(0, $repeat['placements_removed']);
+        $this->assertSame(0, $repeat['matrix_gaps_filled']);
+        $this->assertSame(0, $repeat['ggb_placements_restored']);
+        $this->assertSame(3, $plan->items()->count());
     }
 
     public function test_admin_can_create_reusable_activity_and_add_one_off_manual_entry(): void

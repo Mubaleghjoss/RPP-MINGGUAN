@@ -14,6 +14,7 @@ class RppCompletionService
         private readonly RppMaterialCatalogService $catalog,
         private readonly RppProgressService $progress,
         private readonly RppMatrixFillService $matrixFill,
+        private readonly RppReadinessRepairService $readinessRepair,
     ) {}
 
     public function report(AcademicYear $year, Level $level): array
@@ -53,6 +54,7 @@ class RppCompletionService
             ? $this->catalog->coverage($coveragePlan)
             : ['total' => $ggbTotal, 'used' => 0, 'missing' => $ggbTotal, 'percent' => 0.0];
         $annualValidation = $year->annualValidations()->where('level_id', $level->id)->first();
+        $repair = $this->readinessRepair->preview($year, $level);
         $annualComplete = (float) $coverage['percent'] >= 100 && $annualValidation?->status === 'validated';
         $annualBlockers = [];
         if ((int) $coverage['missing'] > 0) {
@@ -114,6 +116,7 @@ class RppCompletionService
                 'coverage' => $coverage,
                 'status_counts' => $ggbCounts,
             ],
+            'repair' => $repair,
         ];
     }
 
@@ -227,9 +230,16 @@ class RppCompletionService
         if ($matrixStats['missing'] > 0) {
             $blockers[] = "Kelengkapan matriks Semester {$semester} masih {$matrixStats['percent']}% ({$matrixStats['missing']} sel kosong).";
         }
-        $invalidOutlineCount = $plan->items()->whereHas('materials', fn ($query) => $query->where('is_schedulable', false))->count();
+        $integrity = $this->readinessRepair->integrityForPlan($plan);
+        $legacyRelationCount = $integrity['legacy_links'];
+        $legacyPlacementCount = $integrity['legacy_placements'];
+        $invalidOutlineCount = $integrity['invalid_placements'];
         if ($invalidOutlineCount > 0) {
-            $blockers[] = "{$invalidOutlineCount} penempatan masih berisi Subjudul atau Artefak Sumber.";
+            $blockers[] = "{$invalidOutlineCount} penempatan benar-benar merupakan Subjudul atau Artefak Sumber.";
+        }
+        $validPlacementWithLegacyLinks = max(0, $legacyPlacementCount - $invalidOutlineCount);
+        if ($validPlacementWithLegacyLinks > 0) {
+            $blockers[] = "{$validPlacementWithLegacyLinks} materi valid masih membawa {$legacyRelationCount} relasi Subjudul/Artefak lama.";
         }
 
         return [
@@ -248,8 +258,14 @@ class RppCompletionService
                 'target_issue_count' => $targetIssueCount,
                 'matrix_missing_cells' => $matrixStats['missing'],
                 'invalid_outline_count' => $invalidOutlineCount,
+                'legacy_relation_count' => $legacyRelationCount,
+                'legacy_placement_count' => $validPlacementWithLegacyLinks,
                 'validation_pending' => $plan->status !== 'validated',
-                'can_validate' => ($missing ?? 0) === 0 && $targetIssueCount === 0 && $matrixStats['missing'] === 0 && $invalidOutlineCount === 0,
+                'can_validate' => ($missing ?? 0) === 0
+                    && $targetIssueCount === 0
+                    && $matrixStats['missing'] === 0
+                    && $invalidOutlineCount === 0
+                    && $legacyRelationCount === 0,
             ],
         ];
     }

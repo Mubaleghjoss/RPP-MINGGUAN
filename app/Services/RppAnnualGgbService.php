@@ -306,6 +306,82 @@ class RppAnnualGgbService
         return $count;
     }
 
+    /**
+     * Memulihkan hanya kode GGB auto-include yang kehilangan seluruh
+     * penempatan tahunan. Penempatan lain tidak dihapus atau dibuat ulang.
+     */
+    public function restoreMissing(AcademicYear $year, Level $level, ?int $userId = null): int
+    {
+        $coveragePlan = RppPlan::query()
+            ->where('academic_year_id', $year->id)
+            ->where('level_id', $level->id)
+            ->firstOrFail();
+        $query = RppMaterialCatalogItem::query()
+            ->where('level_id', $level->id)
+            ->where('source_kind', 'ggb')
+            ->where('is_schedulable', true)
+            ->where('is_active', true);
+        $materials = $this->catalog->applyGgbStatus($query, $coveragePlan, 'missing')
+            ->where('auto_include', true)
+            ->where('mapping_status', 'mapped')
+            ->where('semester_confirmed', true)
+            ->whereIn('semester_scope', ['1', '2'])
+            ->whereNotNull('rpp_matrix_column_id')
+            ->with('matrixColumn')
+            ->orderBy('sort_order')
+            ->get();
+        $restored = 0;
+
+        foreach ($materials->groupBy('semester_scope') as $semester => $semesterMaterials) {
+            $plan = RppPlan::query()
+                ->where('academic_year_id', $year->id)
+                ->where('level_id', $level->id)
+                ->where('semester', (int) $semester)
+                ->firstOrFail();
+            $weeks = $this->calendar->weeksForPlan($plan, true);
+            if ($weeks->isEmpty()) {
+                continue;
+            }
+
+            foreach ($semesterMaterials->groupBy('rpp_matrix_column_id') as $columnId => $columnMaterials) {
+                foreach ($columnMaterials->values() as $index => $material) {
+                    $fingerprint = 'catalog:'.$material->id;
+                    $existing = $plan->items()->where('source_fingerprint', $fingerprint)->first();
+                    if ($existing) {
+                        $this->catalog->attachPlacement($existing, [$material->id]);
+                        $restored++;
+
+                        continue;
+                    }
+
+                    $weekIndex = min($weeks->count() - 1, (int) floor(($index * $weeks->count()) / max(1, $columnMaterials->count())));
+                    $week = $weeks[$weekIndex];
+                    $position = (int) $plan->items()->where('calendar_week_id', $week->id)->max('position');
+                    $placement = RppWeekItem::query()->create([
+                        'rpp_plan_id' => $plan->id,
+                        'calendar_week_id' => $week->id,
+                        'syllabus_item_id' => null,
+                        'source_fingerprint' => $fingerprint,
+                        'occurrence_no' => 1,
+                        'rpp_matrix_column_id' => $columnId,
+                        'strand' => $material->matrixColumn?->label ?: 'Materi GGB',
+                        'content' => $material->title,
+                        'source' => 'ggb_auto',
+                        'is_locked' => false,
+                        'position' => $position + 1,
+                        'progress_kind' => 'materi_baru',
+                        'lock_version' => 0,
+                        'last_edited_by' => $userId,
+                    ]);
+                    $this->catalog->attachPlacement($placement, [$material->id]);
+                    $restored++;
+                }
+            }
+        }
+
+        return $restored;
+    }
+
     public function validateAnnual(AcademicYear $year, Level $level, ?int $userId): bool
     {
         $plan = RppPlan::query()->where('academic_year_id', $year->id)->where('level_id', $level->id)->firstOrFail();

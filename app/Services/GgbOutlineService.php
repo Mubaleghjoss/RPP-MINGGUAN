@@ -69,10 +69,8 @@ class GgbOutlineService
     {
         $items = RppWeekItem::query()
             ->whereHas('plan', fn ($query) => $query->where('level_id', $level->id))
-            ->whereNull('syllabus_item_id')
             ->whereHas('materials', fn ($query) => $query->where('is_schedulable', false))
-            ->whereDoesntHave('materials', fn ($query) => $query->where('is_schedulable', true))
-            ->with('materials:id')
+            ->with('materials:id,is_schedulable')
             ->get();
         if ($items->isEmpty()) {
             return 0;
@@ -87,6 +85,12 @@ class GgbOutlineService
                 'item_count' => $items->count(),
             ]);
             foreach ($items as $item) {
+                $beforeIds = $item->materials->pluck('id')->sort()->values();
+                $invalidIds = $item->materials->where('is_schedulable', false)->pluck('id');
+                $removePlacement = $item->syllabus_item_id === null
+                    && $item->source === 'ggb_auto'
+                    && $item->materials->where('is_schedulable', true)->isEmpty();
+                $afterIds = $removePlacement ? collect() : $beforeIds->diff($invalidIds)->values();
                 RevisionItem::query()->create([
                     'revision_batch_id' => $batch->id,
                     'revisable_type' => 'rpp',
@@ -95,12 +99,22 @@ class GgbOutlineService
                         'rpp_plan_id', 'calendar_week_id', 'syllabus_item_id', 'source_fingerprint',
                         'occurrence_no', 'rpp_matrix_column_id', 'strand', 'content', 'source',
                         'is_locked', 'position', 'progress_start', 'progress_end', 'progress_kind',
-                    ]) + ['material_catalog_ids' => $item->materials->pluck('id')->all()],
-                    'after_values' => ['removed_by_normalization' => true],
+                    ]) + ['material_catalog_ids' => $beforeIds->all()],
+                    'after_values' => $removePlacement
+                        ? ['removed_by_normalization' => true]
+                        : ['material_catalog_ids' => $afterIds->all()],
                     'before_lock_version' => (int) $item->lock_version,
                     'after_lock_version' => (int) $item->lock_version + 1,
                 ]);
-                $item->delete();
+                if ($removePlacement) {
+                    $item->delete();
+                } else {
+                    $item->materials()->detach($invalidIds);
+                    $item->forceFill([
+                        'lock_version' => (int) $item->lock_version + 1,
+                        'last_edited_by' => $userId,
+                    ])->save();
+                }
             }
 
             return $items->count();

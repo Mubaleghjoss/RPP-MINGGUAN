@@ -25,6 +25,7 @@ use App\Services\RppMatrixPresetService;
 use App\Services\RppMatrixService;
 use App\Services\RppPlanner;
 use App\Services\RppProgressService;
+use App\Services\RppReadinessRepairService;
 use App\Services\RppSchedulePatternService;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\ValidationException;
@@ -285,15 +286,59 @@ class ExportPreview extends Component
         }
     }
 
+    public function repairWizard(RppReadinessRepairService $service): void
+    {
+        $this->resetMessages();
+        try {
+            $result = $service->repair($this->year(), $this->level(), Auth::id());
+            $summary = "{$result['legacy_links_removed']} relasi lama dibersihkan, {$result['placements_removed']} penempatan tidak valid dihapus, {$result['matrix_gaps_filled']} sel diisi, dan {$result['ggb_placements_restored']} cakupan GGB dipulihkan.";
+            $remaining = $result['after'];
+            if ($remaining['legacy_links'] > 0 || $remaining['invalid_placements'] > 0 || $remaining['matrix_gaps'] > 0) {
+                $this->notifyWarning(
+                    $summary.' Masih ada bagian yang memerlukan pemeriksaan Admin.',
+                    'Perbaikan otomatis selesai sebagian',
+                    [
+                        "{$remaining['legacy_links']} relasi lama tersisa.",
+                        "{$remaining['invalid_placements']} penempatan tidak valid tersisa.",
+                        "{$remaining['matrix_gaps']} sel kosong tersisa; {$remaining['admin_gaps']} memerlukan isian Admin.",
+                    ],
+                    ['Buka daftar Sel Kosong, isi bagian yang tidak mempunyai sumber materi, lalu validasi kembali.'],
+                );
+
+                return;
+            }
+
+            $this->notifySuccess(
+                $summary.' Materi manual dan yang dikunci tetap dipertahankan.',
+                'Tahap 3–5 berhasil diperbaiki',
+                [],
+                ['Lakukan Validasi GGB Tahunan, kemudian validasi Semester 1 dan Semester 2 sebagai persetujuan Admin.'],
+            );
+        } catch (ValidationException $exception) {
+            $this->applyValidationException($exception, [], 'Perbaikan tahap 3–5 tidak dapat diselesaikan.');
+        } catch (Throwable $exception) {
+            $this->notifyTechnicalFailure(
+                $exception,
+                'Perbaikan tahap 3–5 gagal. Seluruh transaksi dibatalkan dan tidak ada perubahan yang diterapkan.',
+                'Perbaikan otomatis gagal',
+            );
+        }
+    }
+
     public function saveSemesterRanges(AcademicCalendarService $calendar): void
     {
         $this->resetMessages();
         try {
-            $calendar->saveSemesterRanges($this->year(), [
+            $result = $calendar->saveSemesterRanges($this->year(), [
                 'semester_1_start' => $this->semesterOneStart, 'semester_1_end' => $this->semesterOneEnd,
                 'semester_2_start' => $this->semesterTwoStart, 'semester_2_end' => $this->semesterTwoEnd,
             ], Auth::id());
-            $this->notifySuccess('Rentang Semester 1 dan 2 diperbarui. Jumlah minggu mengikuti tanggal Admin.', 'Rentang semester tersimpan');
+            $this->notifySuccess(
+                "Rentang Semester 1 dan 2 diperbarui. {$result['moved_items']} materi dipindahkan dan {$result['combined_groups']} kelompok digabung pada minggu efektif.",
+                'Rentang semester tersimpan',
+                [],
+                ['Validasi semester kembali menjadi Draf agar Admin dapat memeriksa jadwal. Validasi GGB tahunan tetap aktif selama cakupan masih 100%.'],
+            );
             $this->hydrateSemesterRanges();
         } catch (ValidationException $exception) {
             $this->applyValidationException($exception, [
@@ -303,7 +348,8 @@ class ExportPreview extends Component
             ], 'Rentang semester tidak dapat disimpan.', [
                 'Pastikan tanggal awal dan akhir setiap semester terisi dan berurutan.',
                 'Semester 2 harus dimulai setelah Semester 1 berakhir.',
-                'Jika rentang baru menghapus minggu berisi materi, pindahkan atau susun ulang materi tersebut terlebih dahulu.',
+                'Rentang boleh dipendekkan; materi akan digabung berurutan pada minggu efektif yang tersisa.',
+                'Pastikan setiap semester masih mempunyai sedikitnya satu minggu dan tidak saling tumpang tindih.',
             ]);
         }
     }
@@ -710,6 +756,14 @@ class ExportPreview extends Component
         $calendarPreview = $this->detail === 'calendar'
             ? $calendar->previewEvent($plan->academicYear, $this->calendarPayload(), $this->calendarEventId)
             : null;
+        $semesterPreview = $this->detail === 'calendar'
+            ? $calendar->previewSemesterRanges($plan->academicYear, [
+                'semester_1_start' => $this->semesterOneStart,
+                'semester_1_end' => $this->semesterOneEnd,
+                'semester_2_start' => $this->semesterTwoStart,
+                'semester_2_end' => $this->semesterTwoEnd,
+            ], $plan->level_id)
+            : null;
         $pickerMaterials = collect();
         $pickerColumn = null;
         if ($this->pickerWeekId && $this->pickerColumnId) {
@@ -783,6 +837,7 @@ class ExportPreview extends Component
             'annualValidation' => $annualValidation,
             'calendarEvents' => $plan->academicYear->calendarEvents()->with('levels:id,name,code')->orderBy('starts_on')->get(),
             'calendarPreview' => $calendarPreview,
+            'semesterPreview' => $semesterPreview,
             'completionReport' => $completionReport,
             'balancedPreview' => $balancedPreview,
             'matrixStats' => $matrixStats,
@@ -893,8 +948,8 @@ class ExportPreview extends Component
             $suggestions[] = 'Tinjau jumlah materi terdampak lalu centang persetujuan pergeseran materi.';
         }
         if (in_array('calendar', $keys, true) || str_contains(mb_strtolower($messages), 'tidak cukup')) {
-            $suggestions[] = 'Perpanjang rentang semester atau kurangi rentang libur, evaluasi, maupun ujian agar minggu efektif mencukupi.';
-            $suggestions[] = 'Setelah kalender cukup, gunakan Susun Ulang untuk merapikan distribusi materi.';
+            $suggestions[] = 'Sistem dapat menggabungkan beberapa materi pada minggu yang sama. Perpanjang semester hanya jika seluruh minggunya menjadi non-efektif.';
+            $suggestions[] = 'Kurangi rentang libur/evaluasi atau sisakan sedikitnya satu minggu efektif dalam semester terkait.';
         }
 
         return $suggestions ?: ['Periksa bidang kalender yang ditandai lalu simpan kembali.'];

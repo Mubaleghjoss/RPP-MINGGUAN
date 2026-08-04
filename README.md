@@ -17,6 +17,9 @@ Aplikasi Laravel 12 untuk menjaga alur **GGB → Silabus → RPP global mingguan
 - Kalender berbasis rentang tanggal mendukung Libur, Hari Raya, Evaluasi, dan Ujian untuk semua atau jenjang terpilih. Keterangan dan dampaknya sama pada planner, preview, serta Excel.
 - Normalisasi GGB membedakan **Materi**, **Subjudul**, dan **Artefak Sumber**. Hanya materi sebenarnya yang masuk cakupan, pemilih RPP, dan kamus Excel.
 - Indikator **Kelengkapan Matriks** memeriksa seluruh `minggu efektif × kolom aktif`. Bank Kegiatan, penguatan otomatis, dan isian manual satu kali mencegah sel materi kosong.
+- Wizard PAUD menyediakan **Perbaiki Tahap 3–5** untuk membersihkan relasi Subjudul/Artefak lama dan mengisi gap secara idempoten tanpa mengesahkan RPP otomatis.
+- Rentang semester fleksibel: materi dapat dikompresi berurutan ke minggu efektif yang tersisa, termasuk beberapa materi dalam satu sel, tanpa berpindah semester.
+- Validasi GGB tahunan dipertahankan ketika perubahan kalender hanya memindahkan minggu dan cakupan tetap 100%; validasi semester tetap kembali menjadi Draf untuk ditinjau Admin.
 
 ## Data sumber dan file lokal
 

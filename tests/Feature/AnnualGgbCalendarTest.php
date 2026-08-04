@@ -3,12 +3,14 @@
 namespace Tests\Feature;
 
 use App\Livewire\ExportPreview;
+use App\Models\AcademicSemester;
 use App\Models\AcademicYear;
 use App\Models\CalendarEvent;
 use App\Models\CalendarWeek;
 use App\Models\GgbItem;
 use App\Models\GgbSyllabusLink;
 use App\Models\Level;
+use App\Models\RppAnnualValidation;
 use App\Models\RppMatrixColumn;
 use App\Models\RppMatrixMapping;
 use App\Models\RppPlan;
@@ -89,11 +91,11 @@ class AnnualGgbCalendarTest extends TestCase
         $this->assertSame($weeks[1]->id, $locked->fresh()->calendar_week_id, 'Menghapus acara tidak menarik materi mundur.');
     }
 
-    public function test_calendar_range_is_atomic_when_effective_weeks_are_insufficient(): void
+    public function test_calendar_range_compresses_materials_when_fewer_effective_weeks_remain(): void
     {
         [$level, $year, $plans, $weeks, $column, $syllabus] = $this->fixture();
         foreach ($weeks->take(4) as $index => $week) {
-            $this->placement($plans[1], $week, $column, $syllabus, $index === 0, 'Materi '.($index + 1), $index + 1);
+            $this->placement($plans[1], $week, $column, $syllabus, $index === 0, 'Materi '.($index + 1), $index + 1, 'syllabus:shared');
         }
         $calendar = app(AcademicCalendarService::class);
         $payload = [
@@ -102,14 +104,34 @@ class AnnualGgbCalendarTest extends TestCase
             'level_ids' => [], 'confirm_impact' => true,
         ];
 
+        $calendar->saveEvent($year, $payload, null);
+
+        $this->assertSame(1, CalendarEvent::query()->count());
+        $this->assertSame($weeks[1]->id, $plans[1]->items()->orderBy('position')->first()->calendar_week_id);
+        $this->assertSame(2, $plans[1]->items()->where('calendar_week_id', $weeks[3]->id)->count());
+        $this->assertSame([1, 2], $plans[1]->items()->where('calendar_week_id', $weeks[3]->id)->orderBy('occurrence_no')->pluck('occurrence_no')->all());
+        $this->assertSame(4, $plans[1]->items()->count());
+    }
+
+    public function test_calendar_range_is_rejected_atomically_only_when_no_effective_week_remains(): void
+    {
+        [$level, $year, $plans, $weeks, $column, $syllabus] = $this->fixture();
+        $this->placement($plans[1], $weeks[0], $column, $syllabus, true, 'Materi pertama');
+        $calendar = app(AcademicCalendarService::class);
+        $payload = [
+            'type' => 'holiday', 'title' => 'Libur satu semester', 'details' => 'Tidak menyisakan minggu efektif.',
+            'starts_on' => '2026-07-06', 'ends_on' => '2026-08-02', 'applies_to_all' => true,
+            'level_ids' => [], 'confirm_impact' => true,
+        ];
+
         try {
             $calendar->saveEvent($year, $payload, null);
-            $this->fail('Rentang seharusnya ditolak karena slot tidak cukup.');
+            $this->fail('Rentang seharusnya ditolak ketika tidak ada minggu efektif.');
         } catch (ValidationException $exception) {
             $this->assertStringContainsString('tidak cukup', collect($exception->errors())->flatten()->first());
         }
         $this->assertSame(0, CalendarEvent::query()->count());
-        $this->assertSame($weeks[0]->id, $plans[1]->items()->orderBy('position')->first()->calendar_week_id);
+        $this->assertSame($weeks[0]->id, $plans[1]->items()->first()->calendar_week_id);
     }
 
     public function test_calendar_reflow_moves_repeated_material_from_latest_week_first_without_unique_collision(): void
@@ -130,6 +152,61 @@ class AnnualGgbCalendarTest extends TestCase
         $this->assertSame($weeks[2]->id, $second->fresh()->calendar_week_id);
         $this->assertTrue($first->fresh()->is_locked);
         $this->assertDatabaseHas('calendar_events', ['id' => $event->id, 'title' => 'Libur minggu pertama']);
+    }
+
+    public function test_calendar_change_preserves_validated_annual_ggb_when_coverage_stays_complete(): void
+    {
+        [$level, $year, $plans, $weeks, $column, $syllabus] = $this->fixture();
+        $catalog = app(RppMaterialCatalogService::class);
+        $catalog->syncLevel($level);
+        $placement = $this->placement($plans[1], $weeks[0], $column, $syllabus, true, 'Materi tercakup');
+        $placement->materials()->sync($level->materialCatalogItems()->where('source_kind', 'ggb')->where('is_schedulable', true)->pluck('id'));
+        RppAnnualValidation::query()->create([
+            'academic_year_id' => $year->id, 'level_id' => $level->id,
+            'status' => 'validated', 'coverage_percent' => 100,
+            'validated_at' => now(), 'validated_by' => null,
+        ]);
+
+        app(AcademicCalendarService::class)->saveEvent($year, [
+            'type' => 'exam', 'title' => 'Evaluasi awal', 'details' => 'Materi hanya bergeser.',
+            'starts_on' => '2026-07-06', 'ends_on' => '2026-07-12', 'applies_to_all' => false,
+            'level_ids' => [$level->id], 'confirm_impact' => true,
+        ], null);
+
+        $validation = RppAnnualValidation::query()->where('academic_year_id', $year->id)->where('level_id', $level->id)->firstOrFail();
+        $this->assertSame('validated', $validation->status);
+        $this->assertSame('100.00', (string) $validation->coverage_percent);
+        $this->assertSame('draft', $plans[1]->fresh()->status);
+    }
+
+    public function test_shortening_semester_reuses_week_identity_per_semester_and_never_moves_semester_two_material(): void
+    {
+        [$level, $year, $plans, $weeks, $column, $syllabus] = $this->fixture();
+        foreach ($weeks->take(4) as $index => $week) {
+            $this->placement($plans[1], $week, $column, $syllabus, $index === 0, 'Semester satu '.($index + 1), $index + 1);
+        }
+        $semesterTwo = $this->placement($plans[2], $weeks[4], $column, $syllabus, true, 'Jangkar Semester 2');
+        foreach ([1, 2] as $semester) {
+            $semesterWeeks = $weeks->where('semester', $semester);
+            AcademicSemester::query()->create([
+                'academic_year_id' => $year->id,
+                'semester' => $semester,
+                'starts_on' => $semesterWeeks->first()->starts_on,
+                'ends_on' => $semesterWeeks->last()->starts_on->copy()->addDays(6),
+            ]);
+        }
+
+        $result = app(AcademicCalendarService::class)->saveSemesterRanges($year, [
+            'semester_1_start' => '2026-07-06', 'semester_1_end' => '2026-07-19',
+            'semester_2_start' => '2026-08-03', 'semester_2_end' => '2026-08-30',
+        ], null);
+
+        $this->assertGreaterThan(0, $result['combined_groups']);
+        $this->assertSame($plans[2]->id, $semesterTwo->fresh()->rpp_plan_id);
+        $this->assertSame($weeks[4]->id, $semesterTwo->fresh()->calendar_week_id);
+        $this->assertSame(2, $semesterTwo->fresh()->week->semester);
+        $this->assertSame(2, $plans[1]->fresh()->academicYear->weeks()->where('semester', 1)->count());
+        $this->assertSame(4, $plans[2]->fresh()->academicYear->weeks()->where('semester', 2)->count());
     }
 
     public function test_calendar_validation_dispatches_persistent_notification_with_cause_and_recovery(): void

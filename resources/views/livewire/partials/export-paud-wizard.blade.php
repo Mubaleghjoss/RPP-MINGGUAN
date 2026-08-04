@@ -18,6 +18,30 @@
         <div class="border-b border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-900 sm:px-5" role="status">RPP PAUD lengkap 100%: kalender, GGB tahunan, Silabus, Tilawati 44/44, dan kedua semester sudah tervalidasi.</div>
     @endif
 
+    @php($repair = $completionReport['repair'] ?? [])
+    @if(($repair['legacy_links'] ?? 0) > 0 || ($repair['invalid_placements'] ?? 0) > 0 || ($repair['matrix_gaps'] ?? 0) > 0)
+        <div class="border-b border-amber-200 bg-amber-50 p-4 sm:p-5" role="alert">
+            <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div class="min-w-0">
+                    <p class="font-semibold text-amber-950">Perbaikan deterministik tersedia untuk Tahap 3–5</p>
+                    <p class="mt-1 text-sm leading-6 text-amber-900">
+                        {{ $repair['legacy_links'] ?? 0 }} relasi Subjudul/Artefak lama,
+                        {{ $repair['invalid_placements'] ?? 0 }} penempatan benar-benar tidak valid, dan
+                        {{ $repair['matrix_gaps'] ?? 0 }} sel kosong ditemukan.
+                        Sistem mempertahankan materi manual serta yang dikunci, lalu mengisi gap dari materi/penguatan/Bank Kegiatan yang valid.
+                    </p>
+                    @if(($repair['admin_gaps'] ?? 0) > 0)
+                        <p class="mt-2 text-sm font-semibold text-red-800">{{ $repair['admin_gaps'] }} sel tidak mempunyai sumber dan tetap memerlukan isian Admin.</p>
+                    @endif
+                </div>
+                <button type="button" wire:click="repairWizard" wire:confirm="Jalankan perbaikan Tahap 3–5? Materi manual dan terkunci akan dipertahankan. Validasi akhir tetap dilakukan Admin." wire:loading.attr="disabled" wire:target="repairWizard" class="button-primary shrink-0">
+                    <span wire:loading.remove wire:target="repairWizard">Perbaiki Tahap 3–5</span>
+                    <span wire:loading wire:target="repairWizard">Memperbaiki…</span>
+                </button>
+            </div>
+        </div>
+    @endif
+
     <ol class="divide-y divide-slate-200">
         @foreach($completionReport['steps'] as $index => $step)
             @php($diagnostics = $step['diagnostics'] ?? [])
@@ -59,6 +83,9 @@
                         @endif
                         @if(($diagnostics['matrix_missing_cells'] ?? 0) > 0)
                             <a href="{{ route('exports.index', ['level' => $plan->level_id, 'semester' => $stepSemester, 'detail' => 'gaps']) }}#matrix-gaps" class="button-secondary">Lihat {{ $diagnostics['matrix_missing_cells'] }} Sel Kosong</a>
+                        @endif
+                        @if(($diagnostics['legacy_relation_count'] ?? 0) > 0)
+                            <button type="button" wire:click="repairWizard" wire:loading.attr="disabled" wire:target="repairWizard" class="button-secondary"><span wire:loading.remove wire:target="repairWizard">Bersihkan {{ $diagnostics['legacy_relation_count'] }} Relasi Lama</span><span wire:loading wire:target="repairWizard">Membersihkan…</span></button>
                         @endif
                         @if(($diagnostics['validation_pending'] ?? false) && ($diagnostics['can_validate'] ?? false))
                             <button type="button" wire:click="validatePaudSemester({{ $stepSemester }})" wire:loading.attr="disabled" wire:target="validatePaudSemester({{ $stepSemester }})" class="button-secondary"><span wire:loading.remove wire:target="validatePaudSemester({{ $stepSemester }})">Validasi Semester {{ $stepSemester }}</span><span wire:loading wire:target="validatePaudSemester({{ $stepSemester }})">Memeriksa…</span></button>

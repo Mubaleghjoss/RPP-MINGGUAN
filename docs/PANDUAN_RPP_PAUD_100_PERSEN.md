@@ -48,6 +48,8 @@ Panel ini menampilkan lima langkah, status **Selesai** atau **Perlu tindakan**, 
 
 Kalender dianggap siap ketika kedua semester memiliki rentang valid dan masing-masing mempunyai sedikitnya satu minggu efektif. Kalender tetap valid jika belum ada acara libur, selama hal tersebut memang sesuai keputusan Admin.
 
+Rentang semester bersifat fleksibel. Jika jumlah minggu diperkecil, sistem mempertahankan urutan dan semester materi, lalu menggabungkan beberapa materi dalam sel minggu yang sama. Penyimpanan hanya ditolak jika rentang saling tumpang tindih atau suatu semester tidak lagi mempunyai satu pun minggu efektif. Pratinjau dampak memperlihatkan jumlah minggu lama/baru, materi terdampak, materi terkunci, dan kelompok yang akan digabung.
+
 ## 4. Membagi GGB PAUD ke dua semester
 
 1. Pada langkah **Konfirmasi semester dan kolom GGB**, pilih **Buka Daftar GGB**.
@@ -67,15 +69,20 @@ Pembagian ini tidak mengubah keputusan semester yang sebelumnya sudah dikonfirma
 
 ## 5. Memasukkan dan memvalidasi seluruh GGB
 
-1. Tetap pada daftar GGB.
-2. Isi kembali **Alasan tindakan**, misalnya `Lengkapi GGB PAUD satu tahun`.
-3. Pilih **Lengkapi GGB 1 Tahun**.
-4. Tunggu sampai pesan berhasil muncul.
-5. Pastikan kartu **Cakupan GGB 1 Tahun** menunjukkan `100%` dan jumlah terpasang sama dengan total materi aktual.
-6. Pilih **Validasi GGB 1 Tahun**.
-7. Pastikan status berubah menjadi **Tervalidasi tahunan**.
+1. Jika panel panduan menampilkan **Perbaiki Tahap 3–5**, tekan tombol tersebut terlebih dahulu. Sistem membersihkan relasi Subjudul/Artefak lama dan mengisi sel yang bisa dipulihkan tanpa menghapus materi manual atau terkunci.
+2. Periksa ringkasan hasil. Contoh: `16 relasi lama dibersihkan, 0 penempatan dihapus, dan 4 sel diisi`.
+3. Jika masih ada **Perlu Isian Admin**, buka **Lihat Sel Kosong** dan isi sumber yang benar secara manual.
+4. Tetap pada daftar GGB.
+5. Isi kembali **Alasan tindakan**, misalnya `Lengkapi GGB PAUD satu tahun`.
+6. Pilih **Lengkapi GGB 1 Tahun**.
+7. Tunggu sampai pesan berhasil muncul.
+8. Pastikan kartu **Cakupan GGB 1 Tahun** menunjukkan `100%` dan jumlah terpasang sama dengan total materi aktual.
+9. Pilih **Validasi GGB 1 Tahun**.
+10. Pastikan status berubah menjadi **Tervalidasi tahunan**.
 
 Materi yang sudah dicakup oleh penempatan Silabus tidak digandakan. Materi tambahan dibuat sebagai `ggb_auto`, tidak dikunci, dan tetap dapat disusun ulang secara aman.
+
+Perubahan tanggal, libur, evaluasi, ujian, atau perpindahan minggu tidak membatalkan validasi GGB tahunan selama cakupan tetap 100%. Validasi semester tetap kembali menjadi **Draf** agar Admin memeriksa susunan tanggal dan isi RPP yang berubah.
 
 ## 6. Memeriksa dan memvalidasi Semester 1
 
@@ -124,13 +131,16 @@ File Excel hasil ekspor berada di komputer lokal dan tidak dimasukkan ke GitHub.
 
 | Pesan atau kondisi | Penyebab | Cara memperbaiki |
 |---|---|---|
+| Tahap 4/5 terus kembali dan ada relasi lama | Materi valid masih membawa tautan katalog Subjudul/Artefak dari data sebelum normalisasi | Tekan **Perbaiki Tahap 3–5**. Sistem melepaskan relasi lama, mempertahankan isi kegiatan, dan menghubungkannya ke Bank Kegiatan yang sesuai. |
+| Rentang semester lebih pendek | Jumlah minggu baru lebih sedikit daripada kelompok materi | Simpan rentang setelah memeriksa pratinjau. Sistem menggabungkan beberapa materi per minggu secara berurutan dan mempertahankan materi terkunci. |
+| Tidak ada minggu efektif | Seluruh minggu suatu semester tertutup rentang atau acara | Perpanjang rentang semester atau kurangi libur/evaluasi/ujian hingga sedikitnya satu minggu efektif tersedia. Sistem tidak membuat tanggal fiktif. |
 | Alasan tindakan wajib diisi | Tombol bulk ditekan tanpa alasan | Isi alasan minimal 5 karakter, misalnya `Penyusunan awal RPP PAUD`. |
 | Persetujuan saran kolom belum dicentang | Ada materi dengan saran kolom yang belum disetujui | Periksa judul dan kolom saran, lalu centang persetujuan Admin. |
 | Materi belum mempunyai saran kolom | Sistem tidak dapat menentukan kolom secara aman | Buka **Atur Kolom**, pilih kolom RPP, simpan revisi, lalu ulangi pembagian. |
 | Validasi GGB ditahan | Cakupan tahunan belum 100% | Jalankan **Lengkapi GGB 1 Tahun**, lalu periksa daftar materi yang masih belum masuk. |
 | Kelengkapan Matriks belum 100% | Ada perpotongan minggu efektif dan kolom aktif yang masih kosong | Buka **Lihat Sel Kosong**, jalankan **Susun Otomatis**, atur Bank Kegiatan, atau isi kegiatan manual satu kali. |
 | Subjudul muncul sebagai materi | Peran RPP suatu baris GGB belum tepat | Buka **Master Kurikulum → GGB**, ubah **Peran RPP** menjadi **Subjudul**, isi alasan revisi, lalu susun ulang. |
-| Minggu efektif tidak cukup | Rentang libur/evaluasi menutup terlalu banyak minggu | Perpanjang rentang semester atau sesuaikan acara kalender. Sistem tidak membuat tanggal fiktif. |
+| Minggu efektif tidak cukup | Seluruh minggu semester tertutup atau rentang tidak menyisakan minggu | Sisakan sedikitnya satu minggu efektif. Jika masih ada satu minggu, sistem akan menggabungkan materi secara otomatis. |
 | Cakupan Silabus belum 100% | Masih ada materi Silabus yang belum dijadwalkan | Buka Planner semester terkait, pilih **Belum dijadwalkan**, lalu susun otomatis atau jadwalkan manual. |
 | Target Tilawati belum selesai | Sebagian halaman belum mendapat minggu efektif | Pilih **Susun Otomatis**, periksa target dan jangkar manual, lalu validasi kembali. |
 | Konflik versi atau data berubah | Data diedit dari tab lain setelah halaman dibuka | Muat ulang halaman, periksa nilai terbaru, lalu simpan kembali sebagai revisi baru. |
