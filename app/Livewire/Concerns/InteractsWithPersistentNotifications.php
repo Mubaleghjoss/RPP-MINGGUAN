@@ -14,9 +14,11 @@ trait InteractsWithPersistentNotifications
         string $title = 'Tindakan berhasil',
         array $details = [],
         array $suggestions = [],
+        ?string $scope = null,
+        bool $replaceScope = false,
     ): void {
         $this->setLegacyNotificationState($message, '');
-        $this->dispatchPersistentNotification('success', $title, $message, $details, $suggestions);
+        $this->dispatchPersistentNotification('success', $title, $message, $details, $suggestions, null, null, $scope, $replaceScope);
     }
 
     protected function notifyInfo(
@@ -47,9 +49,11 @@ trait InteractsWithPersistentNotifications
         array $suggestions = [],
         ?string $reference = null,
         ?string $focusField = null,
+        ?string $scope = null,
+        bool $replaceScope = false,
     ): void {
         $this->setLegacyNotificationState('', $message);
-        $this->dispatchPersistentNotification('error', $title, $message, $details, $suggestions, $reference, $focusField);
+        $this->dispatchPersistentNotification('error', $title, $message, $details, $suggestions, $reference, $focusField, $scope, $replaceScope);
     }
 
     protected function notifyValidationException(
@@ -58,11 +62,13 @@ trait InteractsWithPersistentNotifications
         array $suggestions = ['Periksa bidang yang ditandai, perbaiki nilainya, lalu simpan kembali.'],
         ?string $focusField = null,
         string $fallback = 'Data tidak valid.',
+        ?string $scope = null,
+        bool $replaceScope = false,
     ): void {
         $messages = collect($exception->errors())->flatten()->filter()->unique()->values()->all();
         $message = $messages[0] ?? $fallback;
 
-        $this->notifyError($message, $title, $messages, $suggestions, null, $focusField);
+        $this->notifyError($message, $title, $messages, $suggestions, null, $focusField, $scope, $replaceScope);
     }
 
     protected function notifyTechnicalFailure(
@@ -74,6 +80,8 @@ trait InteractsWithPersistentNotifications
             'Muat ulang halaman dan ulangi tindakan sekali lagi.',
             'Jika tetap gagal, salin detail ini dan cari kode referensinya pada storage/logs/laravel.log.',
         ],
+        ?string $scope = null,
+        bool $replaceScope = false,
     ): string {
         $reference = 'ERR-'.now()->format('Ymd-His').'-'.Str::upper(Str::random(6));
         Log::error("{$title} [{$reference}]", [
@@ -81,7 +89,7 @@ trait InteractsWithPersistentNotifications
             'user_id' => auth()->id(),
             'exception' => $exception,
         ]);
-        $this->notifyError($message, $title, $details, $suggestions, $reference);
+        $this->notifyError($message, $title, $details, $suggestions, $reference, null, $scope, $replaceScope);
 
         return $reference;
     }
@@ -94,6 +102,8 @@ trait InteractsWithPersistentNotifications
         array $suggestions = [],
         ?string $reference = null,
         ?string $focusField = null,
+        ?string $scope = null,
+        bool $replaceScope = false,
     ): void {
         $this->dispatch('app-notification', notification: [
             'id' => (string) Str::uuid(),
@@ -104,6 +114,8 @@ trait InteractsWithPersistentNotifications
             'suggestions' => array_values(array_filter(array_map('strval', $suggestions))),
             'reference' => $reference,
             'focus_field' => $focusField,
+            'scope' => $scope,
+            'replace_scope' => $replaceScope,
             'created_at' => now()->format('H:i:s'),
         ]);
     }

@@ -16,6 +16,8 @@ export function normalizeNotification(notification = {}) {
         suggestions: stringList(notification.suggestions),
         reference: notification.reference ? String(notification.reference) : '',
         focusField: notification.focus_field ? String(notification.focus_field) : '',
+        scope: notification.scope ? String(notification.scope) : '',
+        replaceScope: Boolean(notification.replace_scope),
         createdAt: notification.created_at
             ? String(notification.created_at)
             : new Intl.DateTimeFormat('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date()),
@@ -39,7 +41,11 @@ export function persistentNotifications(initial = []) {
         items: (Array.isArray(initial) ? initial : []).map(normalizeNotification).reverse(),
 
         push(notification) {
-            this.items.unshift(normalizeNotification(notification));
+            const item = normalizeNotification(notification);
+            if (item.scope && item.replaceScope) {
+                this.items = this.items.filter((existing) => existing.scope !== item.scope);
+            }
+            this.items.unshift(item);
         },
 
         dismiss(id) {

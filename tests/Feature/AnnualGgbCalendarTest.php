@@ -21,6 +21,7 @@ use App\Models\User;
 use App\Services\AcademicCalendarService;
 use App\Services\RppAnnualGgbService;
 use App\Services\RppMaterialCatalogService;
+use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -235,9 +236,64 @@ class AnnualGgbCalendarTest extends TestCase
                 return $notification['type'] === 'error'
                     && $notification['title'] === 'Rentang kalender tidak dapat disimpan'
                     && $notification['focus_field'] === 'calendarTitle'
+                    && $notification['scope'] === 'calendar-event-save'
+                    && $notification['replace_scope'] === true
                     && count($notification['details'] ?? []) >= 1
                     && count($notification['suggestions'] ?? []) >= 1;
             });
+    }
+
+    public function test_calendar_impact_must_finish_and_confirmation_resets_when_range_changes(): void
+    {
+        [$level, $year, $plans, $weeks, $column, $syllabus] = $this->fixture();
+        $this->placement($plans[1], $weeks[0], $column, $syllabus, false, 'Materi terdampak');
+        $user = User::factory()->create();
+
+        Livewire::actingAs($user)->withQueryParams(['level' => $level->id, 'semester' => 1, 'detail' => 'calendar'])
+            ->test(ExportPreview::class)
+            ->set('calendarTitle', 'Libur sinkronisasi')
+            ->set('calendarStartsOn', '2026-07-06')
+            ->set('calendarEndsOn', '2026-07-12')
+            ->assertSet('calendarImpact.ready', true)
+            ->assertSet('calendarImpact.requires_confirmation', true)
+            ->set('calendarConfirmImpact', true)
+            ->assertSet('calendarConfirmImpact', true)
+            ->set('calendarEndsOn', '2026-07-19')
+            ->assertSet('calendarConfirmImpact', false)
+            ->assertSet('calendarImpact.ready', true)
+            ->set('calendarConfirmImpact', true)
+            ->call('saveCalendarEvent')
+            ->assertDispatched('app-notification', function (string $name, array $params): bool {
+                $notification = $params['notification'] ?? [];
+
+                return $notification['type'] === 'success'
+                    && $notification['scope'] === 'calendar-event-save'
+                    && $notification['replace_scope'] === true
+                    && collect($notification['suggestions'] ?? [])->contains(fn ($step) => str_contains($step, 'Validasi Semester 1'));
+            });
+
+        $this->assertDatabaseHas('calendar_events', [
+            'academic_year_id' => $year->id,
+            'title' => 'Libur sinkronisasi',
+            'starts_on' => '2026-07-06 00:00:00',
+            'ends_on' => '2026-07-19 00:00:00',
+        ]);
+    }
+
+    public function test_application_and_notification_timestamp_use_asia_jakarta(): void
+    {
+        [$level] = $this->fixture();
+        $user = User::factory()->create();
+        $this->travelTo(CarbonImmutable::parse('2026-08-04 19:52:10', 'Asia/Jakarta'));
+
+        $this->assertSame('Asia/Jakarta', config('app.timezone'));
+        Livewire::actingAs($user)->withQueryParams(['level' => $level->id, 'semester' => 1])
+            ->test(ExportPreview::class)
+            ->set('calendarTitle', '')
+            ->set('calendarStartsOn', '2026-07-06')
+            ->set('calendarEndsOn', '2026-07-12')
+            ->call('saveCalendarEvent')
+            ->assertDispatched('app-notification', fn (string $name, array $params): bool => ($params['notification']['created_at'] ?? null) === '19:52:10');
     }
 
     public function test_all_level_exam_reflows_one_thousand_placements_with_bounded_queries(): void

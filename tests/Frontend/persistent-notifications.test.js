@@ -33,3 +33,14 @@ test('notification payload is normalized to plain serializable values', () => {
     assert.match(notificationText(item), /Minggu bentrok/);
     assert.match(notificationText(item), /ERR-123/);
 });
+
+test('a successful calendar operation replaces only stale notifications from the same scope', () => {
+    const center = persistentNotifications();
+    center.push({ id: 'planner', type: 'warning', title: 'Planner', message: 'Periksa materi', scope: 'planner' });
+    center.push({ id: 'calendar-error', type: 'error', title: 'Kalender gagal', message: 'Konfirmasi belum sinkron', scope: 'calendar-event-save', replace_scope: true });
+    center.push({ id: 'calendar-success', type: 'success', title: 'Kalender berhasil', message: 'Event aktif', scope: 'calendar-event-save', replace_scope: true });
+
+    assert.deepEqual(center.items.map((item) => item.id), ['calendar-success', 'planner']);
+    assert.equal(center.items[0].scope, 'calendar-event-save');
+    assert.equal(center.items[0].replaceScope, true);
+});

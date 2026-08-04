@@ -98,6 +98,18 @@ class ExportPreview extends Component
 
     public bool $calendarConfirmImpact = false;
 
+    public array $calendarImpact = [
+        'ready' => false,
+        'week_count' => 0,
+        'plan_count' => 0,
+        'item_count' => 0,
+        'moved_count' => 0,
+        'shifted_locked_count' => 0,
+        'combined_groups' => 0,
+        'shortage_count' => 0,
+        'requires_confirmation' => false,
+    ];
+
     public string $notice = '';
 
     public string $errorMessage = '';
@@ -366,6 +378,52 @@ class ExportPreview extends Component
         $this->calendarAllLevels = $event->applies_to_all;
         $this->calendarLevelIds = $event->levels()->pluck('levels.id')->map(fn ($id) => (string) $id)->all();
         $this->calendarConfirmImpact = false;
+        $this->refreshCalendarImpact();
+    }
+
+    public function updatedCalendarStartsOn(): void
+    {
+        $this->calendarImpactInputChanged();
+    }
+
+    public function updatedCalendarEndsOn(): void
+    {
+        $this->calendarImpactInputChanged();
+    }
+
+    public function updatedCalendarAllLevels(): void
+    {
+        $this->calendarImpactInputChanged();
+    }
+
+    public function updatedCalendarLevelIds(): void
+    {
+        $this->calendarImpactInputChanged();
+    }
+
+    public function refreshCalendarImpact(): void
+    {
+        $this->calendarImpact = $this->emptyCalendarImpact();
+        if (! filled($this->calendarStartsOn) || ! filled($this->calendarEndsOn)) {
+            return;
+        }
+
+        $preview = app(AcademicCalendarService::class)->previewEvent(
+            $this->year(),
+            $this->calendarPayload(),
+            $this->calendarEventId,
+        );
+        $this->calendarImpact = [
+            'ready' => true,
+            'week_count' => $preview['weeks']->count(),
+            'plan_count' => $preview['plans']->count(),
+            'item_count' => (int) $preview['item_count'],
+            'moved_count' => (int) $preview['moved_count'],
+            'shifted_locked_count' => (int) $preview['shifted_locked_count'],
+            'combined_groups' => (int) $preview['combined_groups'],
+            'shortage_count' => $preview['shortages']->count(),
+            'requires_confirmation' => (int) $preview['item_count'] > 0,
+        ];
     }
 
     public function saveCalendarEvent(AcademicCalendarService $calendar): void
@@ -373,6 +431,8 @@ class ExportPreview extends Component
         $this->resetMessages();
         try {
             $result = $calendar->saveEvent($this->year(), $this->calendarPayload(), Auth::id(), $this->calendarEventId);
+            $affectedSemesters = collect($result['affected_semesters'])->map(fn ($semester) => 'Semester '.$semester)->implode(' dan ');
+            $affectedSemesters = $affectedSemesters !== '' ? $affectedSemesters : 'semester terdampak';
             $annualNote = $result['annual_validations_preserved'] > 0
                 ? "{$result['annual_validations_preserved']} validasi GGB tahunan tetap aktif karena cakupannya masih 100%."
                 : 'Cakupan GGB tahunan dihitung ulang tanpa menghapus relasi materi.';
@@ -382,11 +442,15 @@ class ExportPreview extends Component
                 [
                     "{$result['range_items']} materi berada tepat pada rentang yang dibuat non-efektif.",
                     "{$result['locked_items']} materi terkunci dipertahankan isi dan status kuncinya.",
+                    'Event sudah aktif dan dapat dilihat pada bagian Rentang Aktif.',
                 ],
                 [
                     $annualNote,
-                    'Periksa kembali baris non-efektif dan urutan materi pada preview RPP, lalu validasi semester yang berubah.',
+                    "Buka preview {$affectedSemesters}, lalu periksa baris non-efektif dan urutan materi setelah event.",
+                    "Jika susunannya sudah benar, lakukan Validasi {$affectedSemesters}.",
                 ],
+                'calendar-event-save',
+                true,
             );
             $this->resetCalendarForm();
         } catch (ValidationException $exception) {
@@ -394,7 +458,7 @@ class ExportPreview extends Component
                 'type' => 'calendarType', 'title' => 'calendarTitle', 'details' => 'calendarDetails',
                 'starts_on' => 'calendarStartsOn', 'ends_on' => 'calendarEndsOn',
                 'level_ids' => 'calendarLevelIds', 'confirm_impact' => 'calendarConfirmImpact', 'calendar' => 'calendarStartsOn',
-            ], 'Rentang kalender tidak dapat disimpan.', $this->calendarValidationSuggestions($exception));
+            ], 'Rentang kalender tidak dapat disimpan.', $this->calendarValidationSuggestions($exception), 'calendar-event-save', true);
         } catch (Throwable $exception) {
             $this->notifyTechnicalFailure(
                 $exception,
@@ -406,6 +470,8 @@ class ExportPreview extends Component
                     'Jika tetap gagal, jalankan Susun Otomatis pada semester terdampak lalu ulangi pengaturan kalender.',
                     'Salin detail notifikasi ini dan cari kode referensinya pada storage/logs/laravel.log.',
                 ],
+                'calendar-event-save',
+                true,
             );
         }
     }
@@ -433,6 +499,7 @@ class ExportPreview extends Component
         $this->reset(['calendarEventId', 'calendarTitle', 'calendarDetails', 'calendarStartsOn', 'calendarEndsOn', 'calendarLevelIds', 'calendarConfirmImpact']);
         $this->calendarType = 'holiday';
         $this->calendarAllLevels = true;
+        $this->calendarImpact = $this->emptyCalendarImpact();
     }
 
     public function openMaterialPicker(int $weekId, int $columnId): void
@@ -762,9 +829,7 @@ class ExportPreview extends Component
             $catalog->applyGgbStatus($ggbQuery, $plan, $this->ggbStatus);
             $ggbItems = $ggbQuery->orderBy('sort_order')->paginate(50, ['*'], 'ggbPage');
         }
-        $calendarPreview = $this->detail === 'calendar'
-            ? $calendar->previewEvent($plan->academicYear, $this->calendarPayload(), $this->calendarEventId)
-            : null;
+        $calendarPreview = $this->detail === 'calendar' ? $this->calendarImpact : null;
         $semesterPreview = $this->detail === 'calendar'
             ? $calendar->previewSemesterRanges($plan->academicYear, [
                 'semester_1_start' => $this->semesterOneStart,
@@ -846,6 +911,7 @@ class ExportPreview extends Component
             'annualValidation' => $annualValidation,
             'calendarEvents' => $plan->academicYear->calendarEvents()->with('levels:id,name,code')->orderBy('starts_on')->get(),
             'calendarPreview' => $calendarPreview,
+            'calendarSubmitReady' => $this->calendarSubmitReady(),
             'semesterPreview' => $semesterPreview,
             'completionReport' => $completionReport,
             'balancedPreview' => $balancedPreview,
@@ -891,6 +957,43 @@ class ExportPreview extends Component
         ];
     }
 
+    private function calendarImpactInputChanged(): void
+    {
+        $this->calendarConfirmImpact = false;
+        $this->refreshCalendarImpact();
+    }
+
+    private function emptyCalendarImpact(): array
+    {
+        return [
+            'ready' => false,
+            'week_count' => 0,
+            'plan_count' => 0,
+            'item_count' => 0,
+            'moved_count' => 0,
+            'shifted_locked_count' => 0,
+            'combined_groups' => 0,
+            'shortage_count' => 0,
+            'requires_confirmation' => false,
+        ];
+    }
+
+    private function calendarSubmitReady(): bool
+    {
+        $scopeReady = $this->calendarAllLevels || $this->calendarLevelIds !== [];
+        $impactReady = (bool) ($this->calendarImpact['ready'] ?? false)
+            && (int) ($this->calendarImpact['shortage_count'] ?? 0) === 0;
+        $confirmationReady = ! ($this->calendarImpact['requires_confirmation'] ?? false)
+            || $this->calendarConfirmImpact;
+
+        return filled(trim($this->calendarTitle))
+            && filled($this->calendarStartsOn)
+            && filled($this->calendarEndsOn)
+            && $scopeReady
+            && $impactReady
+            && $confirmationReady;
+    }
+
     private function assertLevel(): void
     {
         abort_unless($this->levelId && Level::query()->whereKey($this->levelId)->exists(), 404);
@@ -921,6 +1024,8 @@ class ExportPreview extends Component
         array $fieldMap = [],
         string $fallback = 'Data tidak valid.',
         array $suggestions = ['Periksa bidang yang ditandai, perbaiki nilainya, lalu simpan kembali.'],
+        ?string $notificationScope = null,
+        bool $replaceNotificationScope = false,
     ): void {
         $firstField = null;
         foreach ($exception->errors() as $field => $messages) {
@@ -935,6 +1040,8 @@ class ExportPreview extends Component
             $suggestions,
             $firstField,
             $fallback,
+            $notificationScope,
+            $replaceNotificationScope,
         );
         if ($firstField) {
             $this->dispatch('focus-validation-field', field: $firstField);

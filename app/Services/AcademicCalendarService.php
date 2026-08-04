@@ -250,6 +250,7 @@ class AcademicCalendarService
             $result = [
                 'event' => $event->fresh('levels'),
                 'affected_plans' => $affectedPlanIds->count(),
+                'affected_semesters' => $plans->pluck('semester')->map(fn ($semester) => (int) $semester)->unique()->sort()->values()->all(),
                 'range_items' => (int) $preview['item_count'],
                 'moved_items' => $moved,
                 'locked_items' => $lockedMoved,

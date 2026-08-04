@@ -99,13 +99,13 @@
                             <p class="mt-1 text-sm leading-6 text-slate-700" x-text="item.message"></p>
 
                             <details x-show="item.details.length || item.suggestions.length || item.reference" class="mt-3 rounded-xl bg-slate-50 px-3 py-2 ring-1 ring-slate-200">
-                                <summary class="min-h-10 py-2 text-sm font-semibold text-slate-700">Lihat penyebab dan saran</summary>
+                                <summary class="min-h-10 cursor-pointer py-2 text-sm font-semibold text-slate-700" x-text="item.type === 'success' ? 'Lihat hasil dan langkah berikutnya' : (item.type === 'error' ? 'Lihat penyebab dan cara mengatasi' : 'Lihat rincian')"></summary>
                                 <div class="pb-2 text-sm leading-6 text-slate-700">
                                     <template x-if="item.details.length">
-                                        <div><p class="font-semibold text-slate-900">Penyebab</p><ul class="mt-1 list-disc space-y-1 pl-5"><template x-for="detail in item.details"><li x-text="detail"></li></template></ul></div>
+                                        <div><p class="font-semibold text-slate-900" x-text="item.type === 'success' ? 'Hasil perubahan' : (item.type === 'error' ? 'Penyebab' : 'Rincian')"></p><ul class="mt-1 list-disc space-y-1 pl-5"><template x-for="detail in item.details"><li x-text="detail"></li></template></ul></div>
                                     </template>
                                     <template x-if="item.suggestions.length">
-                                        <div class="mt-3"><p class="font-semibold text-slate-900">Agar berhasil</p><ul class="mt-1 list-disc space-y-1 pl-5"><template x-for="suggestion in item.suggestions"><li x-text="suggestion"></li></template></ul></div>
+                                        <div class="mt-3"><p class="font-semibold text-slate-900" x-text="item.type === 'success' ? 'Langkah berikutnya' : (item.type === 'error' ? 'Agar berhasil' : 'Saran')"></p><ul class="mt-1 list-disc space-y-1 pl-5"><template x-for="suggestion in item.suggestions"><li x-text="suggestion"></li></template></ul></div>
                                     </template>
                                     <p x-show="item.reference" class="mt-3 font-mono text-xs text-slate-600">Kode referensi: <span x-text="item.reference"></span></p>
                                 </div>
