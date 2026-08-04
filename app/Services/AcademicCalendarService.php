@@ -326,8 +326,9 @@ class AcademicCalendarService
     private function reflowPlan(RppPlan $plan, Collection $available, RevisionBatch $batch, ?int $userId): int
     {
         $availableByNumber = $available->keyBy('week_number');
-        $moved = 0;
         $plan->loadMissing('items.week');
+        $moves = collect();
+
         foreach ($plan->items->groupBy(fn ($item) => $item->rpp_matrix_column_id ?: 0) as $items) {
             $groups = $items->groupBy('calendar_week_id')->sortBy(fn ($group) => $group->first()->week?->week_number ?? 9999);
             $cursor = -1;
@@ -342,20 +343,51 @@ class AcademicCalendarService
                     if ((int) $item->calendar_week_id === (int) $target->id) {
                         continue;
                     }
-                    $beforeVersion = (int) $item->lock_version;
-                    $before = ['calendar_week_id' => $item->calendar_week_id];
-                    $item->forceFill(['calendar_week_id' => $target->id, 'lock_version' => $beforeVersion + 1, 'last_edited_by' => $userId])->save();
-                    RevisionItem::query()->create([
-                        'revision_batch_id' => $batch->id, 'revisable_type' => 'rpp', 'revisable_id' => $item->id,
-                        'before_values' => $before, 'after_values' => ['calendar_week_id' => $target->id],
-                        'before_lock_version' => $beforeVersion, 'after_lock_version' => $beforeVersion + 1,
+                    $moves->push([
+                        'item' => $item,
+                        'source_week_number' => (int) ($item->week?->week_number ?? 0),
+                        'target' => $target,
                     ]);
-                    $moved++;
                 }
             }
         }
 
-        return $moved;
+        $targetWeeks = $moves->mapWithKeys(fn (array $move) => [$move['item']->id => (int) $move['target']->id]);
+        $finalIdentities = $plan->items->map(function ($item) use ($targetWeeks) {
+            $weekId = $targetWeeks->get($item->id, (int) $item->calendar_week_id);
+
+            return [
+                'key' => implode('|', [$weekId, $item->source_fingerprint, $item->occurrence_no]),
+                'item' => $item,
+                'week_id' => $weekId,
+            ];
+        });
+        $conflict = $finalIdentities->groupBy('key')->first(fn (Collection $rows) => $rows->count() > 1);
+        if ($conflict) {
+            $item = $conflict->first()['item'];
+            $week = $plan->academicYear->weeks()->find($conflict->first()['week_id']);
+            $weekLabel = $week ? 'Minggu '.$week->week_number : 'minggu tujuan';
+            throw ValidationException::withMessages([
+                'calendar' => "Materi {$item->content} akan ganda pada {$weekLabel}. Tinjau pengulangan materi atau jalankan Susun Ulang sebelum menyimpan kalender.",
+            ]);
+        }
+
+        // Perpindahan maju diterapkan dari minggu paling akhir agar slot tujuan
+        // dikosongkan lebih dulu dan tidak melanggar unique key secara sementara.
+        foreach ($moves->sortByDesc('source_week_number') as $move) {
+            $item = $move['item'];
+            $target = $move['target'];
+            $beforeVersion = (int) $item->lock_version;
+            $before = ['calendar_week_id' => $item->calendar_week_id];
+            $item->forceFill(['calendar_week_id' => $target->id, 'lock_version' => $beforeVersion + 1, 'last_edited_by' => $userId])->save();
+            RevisionItem::query()->create([
+                'revision_batch_id' => $batch->id, 'revisable_type' => 'rpp', 'revisable_id' => $item->id,
+                'before_values' => $before, 'after_values' => ['calendar_week_id' => $target->id],
+                'before_lock_version' => $beforeVersion, 'after_lock_version' => $beforeVersion + 1,
+            ]);
+        }
+
+        return $moves->count();
     }
 
     private function log(?int $userId, string $action, array $details): void

@@ -26,9 +26,6 @@
         </div>
     </section>
 
-    @if($notice)<div class="rounded-xl bg-emerald-50 px-4 py-3 text-sm text-emerald-900 ring-1 ring-emerald-200" role="status">{{ $notice }}</div>@endif
-    @if($errorMessage)<div class="rounded-xl bg-red-50 px-4 py-3 text-sm font-medium text-red-900 ring-1 ring-red-200" role="alert">{{ $errorMessage }}</div>@endif
-
     <section class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-7" aria-label="Ringkasan semester">
         <article class="panel p-4"><p class="text-sm text-slate-500">Cakupan</p><p class="metric-number mt-2">{{ number_format((float) $plan->coverage_percent, 1) }}%</p></article>
         <article class="panel p-4"><p class="text-sm text-slate-500">Status</p><p class="mt-2 font-semibold {{ $plan->status === 'validated' ? 'text-emerald-700' : 'text-amber-700' }}">{{ $plan->status === 'validated' ? 'Tervalidasi' : 'Draf' }}</p></article>

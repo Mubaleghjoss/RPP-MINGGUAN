@@ -8,13 +8,6 @@
         <a href="{{ route('revisions.index') }}" class="button-secondary">Riwayat revisi</a>
     </header>
 
-    @if ($notice)
-        <div role="status" class="rounded-xl bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-900 ring-1 ring-emerald-200">{{ $notice }}</div>
-    @endif
-    @if ($errorMessage)
-        <div role="alert" class="rounded-xl bg-red-50 px-4 py-3 text-sm font-medium text-red-900 ring-1 ring-red-200">{{ $errorMessage }}</div>
-    @endif
-
     <nav class="flex gap-1 overflow-x-auto border-b border-slate-200" aria-label="Jenis data">
         @foreach (['ggb' => 'GGB', 'syllabus' => 'Silabus', 'link' => 'Relasi GGB–Silabus', 'rpp' => 'RPP Mingguan'] as $key => $label)
             <button type="button" @click="if (dirtyCount > 0 && !confirm('Buang draf yang belum disimpan dan ganti tabel?')) { $event.stopImmediatePropagation() } else { clearDraft() }" wire:click="setTab('{{ $key }}')" class="min-h-11 shrink-0 border-b-2 px-4 text-sm font-semibold {{ $tab === $key ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-slate-600 hover:text-slate-950' }}" aria-current="{{ $tab === $key ? 'page' : 'false' }}">{{ $label }}</button>

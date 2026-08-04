@@ -204,7 +204,7 @@ class PlannerBulkActionTest extends TestCase
             ->assertSee('Jadwalkan Otomatis')
             ->call('scheduleAutomatically', $this->ready->id)
             ->assertSet('errorMessage', '')
-            ->assertSee('Materi dijadwalkan otomatis ke Minggu 2')
+            ->assertDispatched('app-notification', fn (string $name, array $params): bool => str_contains($params['notification']['message'] ?? '', 'Materi dijadwalkan otomatis ke Minggu 2'))
             ->assertDontSee('Tentatif adalah catatan waktu dari sumber dan tidak menghalangi penjadwalan.');
 
         $created = RppWeekItem::query()
@@ -237,7 +237,7 @@ class PlannerBulkActionTest extends TestCase
             ->assertSet('errorMessage', '')
             ->assertSet('manualSyllabusId', null)
             ->assertSet('manualWeekId', null)
-            ->assertSee('Materi dijadwalkan manual ke Minggu 2 dan dikunci.');
+            ->assertDispatched('app-notification', fn (string $name, array $params): bool => ($params['notification']['message'] ?? '') === 'Materi dijadwalkan manual ke Minggu 2 dan dikunci.');
 
         $created = RppWeekItem::query()
             ->where('rpp_plan_id', $this->plan->id)

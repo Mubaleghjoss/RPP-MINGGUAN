@@ -2,6 +2,7 @@
 
 namespace App\Livewire;
 
+use App\Livewire\Concerns\InteractsWithPersistentNotifications;
 use App\Models\AcademicYear;
 use App\Models\CalendarEvent;
 use App\Models\Level;
@@ -38,6 +39,7 @@ use Throwable;
 #[Title('Preview dan Ekspor RPP')]
 class ExportPreview extends Component
 {
+    use InteractsWithPersistentNotifications;
     use WithPagination;
 
     #[Url(as: 'level')]
@@ -126,7 +128,6 @@ class ExportPreview extends Component
         abort_unless(in_array($this->semester, [1, 2], true), 404);
         $this->levelId ??= Level::query()->orderBy('sort_order')->value('id');
         $this->assertLevel();
-        $this->notice = (string) session('notice', '');
         if (! in_array($this->detail, ['', 'ggb', 'calendar'], true)) {
             $this->detail = '';
         }
@@ -190,7 +191,7 @@ class ExportPreview extends Component
         $this->resetMessages();
         try {
             $count = $service->confirm($this->level(), $this->selectedGgb, $this->ggbSemester, $this->ggbColumnId, $this->ggbReason, Auth::id());
-            $this->notice = "{$count} materi GGB dikonfirmasi. Materi siap dapat dimasukkan melalui Lengkapi GGB 1 Tahun.";
+            $this->notifySuccess("{$count} materi GGB dikonfirmasi. Materi siap dapat dimasukkan melalui Lengkapi GGB 1 Tahun.", 'Konfirmasi GGB berhasil');
             $this->selectedGgb = [];
             $this->ggbSemester = null;
             $this->ggbColumnId = null;
@@ -214,9 +215,10 @@ class ExportPreview extends Component
                 $this->ggbConfirmSuggestedMappings,
                 Auth::id(),
             );
-            $this->notice = $result['changed'] > 0
+            $message = $result['changed'] > 0
                 ? "{$result['changed']} materi dikonfirmasi: Semester 1 {$result['semester_1']} dan Semester 2 {$result['semester_2']}. Lanjutkan dengan Lengkapi GGB 1 Tahun."
                 : 'Pembagian semester sudah lengkap dan tidak memerlukan perubahan.';
+            $this->notifySuccess($message, 'Pembagian GGB selesai');
             $this->ggbReason = '';
             $this->ggbConfirmSuggestedMappings = false;
         } catch (ValidationException $exception) {
@@ -231,14 +233,13 @@ class ExportPreview extends Component
         $this->resetMessages();
         try {
             $result = $service->enableReadyAndSchedule($this->year(), $this->level(), $this->ggbReason, Auth::id());
-            $this->notice = "{$result['scheduled']} materi GGB ditambahkan. Cakupan tahunan sekarang {$result['coverage']['percent']}%.";
+            $this->notifySuccess("{$result['scheduled']} materi GGB ditambahkan. Cakupan tahunan sekarang {$result['coverage']['percent']}%.", 'Cakupan GGB diperbarui');
             $this->ggbReason = '';
             $this->selectedGgb = [];
         } catch (ValidationException $exception) {
             $this->applyValidationException($exception, ['reason' => 'ggbReason'], 'Bulk GGB gagal.');
         } catch (Throwable $exception) {
-            report($exception);
-            $this->errorMessage = 'Bulk GGB gagal. Tidak ada perubahan yang diterapkan.';
+            $this->notifyTechnicalFailure($exception, 'Bulk GGB gagal. Tidak ada perubahan yang diterapkan.', 'Bulk GGB mengalami gangguan');
         }
     }
 
@@ -247,10 +248,15 @@ class ExportPreview extends Component
         $this->resetMessages();
         $valid = $service->validateAnnual($this->year(), $this->level(), Auth::id());
         if ($valid) {
-            $this->notice = 'Cakupan GGB satu tahun tervalidasi 100%.';
+            $this->notifySuccess('Cakupan GGB satu tahun tervalidasi 100%.', 'Validasi GGB berhasil');
         } else {
             $coverage = app(RppMaterialCatalogService::class)->coverage($this->plan());
-            $this->errorMessage = "Validasi GGB ditahan: {$coverage['missing']} dari {$coverage['total']} materi belum masuk RPP. Jalankan Lengkapi GGB 1 Tahun terlebih dahulu.";
+            $this->notifyWarning(
+                "Validasi GGB ditahan: {$coverage['missing']} dari {$coverage['total']} materi belum masuk RPP.",
+                'Cakupan GGB belum lengkap',
+                [],
+                ['Buka daftar Cakupan GGB.', 'Konfirmasi semester dan kolom materi yang masih ambigu.', 'Jalankan Lengkapi GGB 1 Tahun terlebih dahulu.'],
+            );
         }
     }
 
@@ -262,14 +268,18 @@ class ExportPreview extends Component
                 'semester_1_start' => $this->semesterOneStart, 'semester_1_end' => $this->semesterOneEnd,
                 'semester_2_start' => $this->semesterTwoStart, 'semester_2_end' => $this->semesterTwoEnd,
             ], Auth::id());
-            $this->notice = 'Rentang Semester 1 dan 2 diperbarui. Jumlah minggu mengikuti tanggal Admin.';
+            $this->notifySuccess('Rentang Semester 1 dan 2 diperbarui. Jumlah minggu mengikuti tanggal Admin.', 'Rentang semester tersimpan');
             $this->hydrateSemesterRanges();
         } catch (ValidationException $exception) {
             $this->applyValidationException($exception, [
                 'semester_1_start' => 'semesterOneStart', 'semester_1_end' => 'semesterOneEnd',
                 'semester_2_start' => 'semesterTwoStart', 'semester_2_end' => 'semesterTwoEnd',
                 'semester' => 'semesterOneStart',
-            ], 'Rentang semester tidak dapat disimpan.');
+            ], 'Rentang semester tidak dapat disimpan.', [
+                'Pastikan tanggal awal dan akhir setiap semester terisi dan berurutan.',
+                'Semester 2 harus dimulai setelah Semester 1 berakhir.',
+                'Jika rentang baru menghapus minggu berisi materi, pindahkan atau susun ulang materi tersebut terlebih dahulu.',
+            ]);
         }
     }
 
@@ -292,26 +302,50 @@ class ExportPreview extends Component
         $this->resetMessages();
         try {
             $calendar->saveEvent($this->year(), $this->calendarPayload(), Auth::id(), $this->calendarEventId);
-            $this->notice = 'Rentang kalender disimpan dan RPP terdampak digeser ke minggu efektif berikutnya.';
+            $this->notifySuccess(
+                'Rentang kalender disimpan dan RPP terdampak digeser ke minggu efektif berikutnya.',
+                'Kalender berhasil diperbarui',
+                [],
+                ['Periksa kembali baris non-efektif dan urutan materi pada preview RPP.'],
+            );
             $this->resetCalendarForm();
         } catch (ValidationException $exception) {
             $this->applyValidationException($exception, [
                 'type' => 'calendarType', 'title' => 'calendarTitle', 'details' => 'calendarDetails',
                 'starts_on' => 'calendarStartsOn', 'ends_on' => 'calendarEndsOn',
                 'level_ids' => 'calendarLevelIds', 'confirm_impact' => 'calendarConfirmImpact', 'calendar' => 'calendarStartsOn',
-            ], 'Rentang kalender tidak dapat disimpan.');
+            ], 'Rentang kalender tidak dapat disimpan.', $this->calendarValidationSuggestions($exception));
         } catch (Throwable $exception) {
-            report($exception);
-            $this->errorMessage = 'Rentang kalender gagal disimpan. Tidak ada perubahan yang diterapkan.';
+            $this->notifyTechnicalFailure(
+                $exception,
+                'Rentang kalender gagal disimpan. Seluruh transaksi dibatalkan sehingga tidak ada perubahan yang diterapkan.',
+                'Kalender gagal disimpan',
+                ['Terjadi gangguan ketika materi RPP digeser ke minggu efektif berikutnya.'],
+                [
+                    'Muat ulang halaman agar jadwal terbaru terbaca, lalu coba simpan kembali.',
+                    'Jika tetap gagal, jalankan Susun Otomatis pada semester terdampak lalu ulangi pengaturan kalender.',
+                    'Salin detail notifikasi ini dan cari kode referensinya pada storage/logs/laravel.log.',
+                ],
+            );
         }
     }
 
     public function deleteCalendarEvent(int $eventId, AcademicCalendarService $calendar): void
     {
-        $event = CalendarEvent::query()->where('academic_year_id', $this->year()->id)->findOrFail($eventId);
-        $calendar->deleteEvent($event, Auth::id());
-        $this->notice = 'Rentang dihapus. Minggu dibuka kembali; materi tidak ditarik mundur otomatis.';
-        $this->resetCalendarForm();
+        $this->resetMessages();
+        try {
+            $event = CalendarEvent::query()->where('academic_year_id', $this->year()->id)->findOrFail($eventId);
+            $calendar->deleteEvent($event, Auth::id());
+            $this->notifySuccess(
+                'Rentang dihapus. Minggu dibuka kembali; materi tidak ditarik mundur otomatis.',
+                'Rentang kalender dihapus',
+                [],
+                ['Gunakan Susun Ulang jika materi ingin ditarik kembali ke minggu yang baru dibuka.'],
+            );
+            $this->resetCalendarForm();
+        } catch (Throwable $exception) {
+            $this->notifyTechnicalFailure($exception, 'Rentang kalender gagal dihapus. Tidak ada perubahan yang diterapkan.', 'Rentang gagal dihapus');
+        }
     }
 
     public function resetCalendarForm(): void
@@ -354,13 +388,12 @@ class ExportPreview extends Component
                 $this->pickerReason,
                 Auth::id(),
             );
-            $this->notice = "{$count} materi ditambahkan dan dikunci. Materi yang pernah digunakan ditandai sebagai penguatan.";
+            $this->notifySuccess("{$count} materi ditambahkan dan dikunci. Materi yang pernah digunakan ditandai sebagai penguatan.", 'Materi RPP ditambahkan');
             $this->closeMaterialPicker();
         } catch (ValidationException $exception) {
-            $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Materi tidak dapat ditambahkan.';
+            $this->notifyValidationException($exception, 'Materi tidak dapat ditambahkan', ['Periksa pilihan materi, alasan tindakan, dan minggu tujuan.'], null, 'Materi tidak dapat ditambahkan.');
         } catch (Throwable $exception) {
-            report($exception);
-            $this->errorMessage = 'Penambahan materi gagal. Tidak ada perubahan yang diterapkan.';
+            $this->notifyTechnicalFailure($exception, 'Penambahan materi gagal. Tidak ada perubahan yang diterapkan.', 'Materi gagal ditambahkan');
         }
     }
 
@@ -407,13 +440,12 @@ class ExportPreview extends Component
                 'range_end' => $this->targetEnd,
                 'strategy' => $this->targetStrategy,
             ], $this->targetVersion, $this->targetReason, Auth::user());
-            $this->notice = "Target disimpan dalam revisi {$batch->uuid}. Klik Susun Otomatis untuk membagi rentang ke minggu efektif.";
+            $this->notifySuccess("Target disimpan dalam revisi {$batch->uuid}. Klik Susun Otomatis untuk membagi rentang ke minggu efektif.", 'Target progres tersimpan');
             $this->hydrateTargetForm($item->id, false);
         } catch (ValidationException $exception) {
-            $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Target tidak valid.';
+            $this->notifyValidationException($exception, 'Target progres belum valid', ['Periksa materi, rentang awal-akhir, dan alasan revisi.'], null, 'Target tidak valid.');
         } catch (Throwable $exception) {
-            report($exception);
-            $this->errorMessage = 'Target gagal disimpan. Tidak ada perubahan yang diterapkan.';
+            $this->notifyTechnicalFailure($exception, 'Target gagal disimpan. Tidak ada perubahan yang diterapkan.', 'Target progres gagal disimpan');
         }
     }
 
@@ -423,10 +455,10 @@ class ExportPreview extends Component
         try {
             $target = $this->plan()->progressTargets()->findOrFail($targetId);
             $batch = $revisions->deleteProgressTarget($target, $this->targetReason, Auth::user());
-            $this->notice = "Target dinonaktifkan dalam revisi {$batch->uuid}.";
+            $this->notifySuccess("Target dinonaktifkan dalam revisi {$batch->uuid}.", 'Target progres dinonaktifkan');
             $this->resetTargetForm();
         } catch (ValidationException $exception) {
-            $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Target tidak dapat dihapus.';
+            $this->notifyValidationException($exception, 'Target belum dapat dinonaktifkan', ['Periksa alasan revisi lalu coba kembali.'], null, 'Target tidak dapat dihapus.');
         }
     }
 
@@ -449,17 +481,16 @@ class ExportPreview extends Component
             }
             $batch = $revisions->applyBatch($patches, $reason, Auth::user());
             app(RppPlanner::class)->refreshCoverage($plan);
-            $this->notice = "{$batch->item_count} baris disimpan dalam revisi {$batch->uuid}.";
+            $this->notifySuccess("{$batch->item_count} baris disimpan dalam revisi {$batch->uuid}.", 'Perubahan RPP tersimpan');
             $this->dispatch('grid-saved');
 
             return ['ok' => true, 'batch' => $batch->uuid];
         } catch (ValidationException $exception) {
-            $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Data tidak valid.';
+            $this->notifyValidationException($exception, 'Perubahan belum dapat disimpan', ['Periksa sel yang berubah dan alasan revisi.'], null, 'Data tidak valid.');
         } catch (RuntimeException $exception) {
-            $this->errorMessage = $exception->getMessage();
+            $this->notifyError($exception->getMessage(), 'Perubahan belum dapat disimpan', [$exception->getMessage()], ['Muat ulang nilai terbaru jika data telah diubah pada tab lain.']);
         } catch (Throwable $exception) {
-            report($exception);
-            $this->errorMessage = 'Perubahan gagal disimpan. Tidak ada data yang diterapkan.';
+            $this->notifyTechnicalFailure($exception, 'Perubahan gagal disimpan. Tidak ada data yang diterapkan.', 'Perubahan RPP gagal disimpan');
         }
 
         return ['ok' => false, 'message' => $this->errorMessage];
@@ -470,9 +501,9 @@ class ExportPreview extends Component
         $this->resetMessages();
         try {
             $planner->generate($this->plan());
-            $this->notice = "Semester {$this->semester} berhasil disusun. Jangkar manual yang dikunci tetap dipertahankan.";
+            $this->notifySuccess("Semester {$this->semester} berhasil disusun. Jangkar manual yang dikunci tetap dipertahankan.", 'Penyusunan otomatis selesai');
         } catch (ValidationException $exception) {
-            $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Penyusunan otomatis gagal.';
+            $this->notifyValidationException($exception, 'Penyusunan otomatis ditahan', ['Periksa minggu efektif, pemetaan kolom, dan target progres.'], null, 'Penyusunan otomatis gagal.');
         }
     }
 
@@ -481,11 +512,16 @@ class ExportPreview extends Component
         $this->resetMessages();
         $valid = $planner->validate($this->plan());
         if ($valid) {
-            $this->notice = "RPP Semester {$this->semester} tervalidasi.";
+            $this->notifySuccess("RPP Semester {$this->semester} tervalidasi.", 'Validasi semester berhasil');
         } else {
             $report = app(RppCompletionService::class)->report($this->year(), $this->level());
             $step = collect($report['steps'])->firstWhere('key', "semester_{$this->semester}");
-            $this->errorMessage = 'Validasi Semester '.$this->semester.' ditahan. '.($step['summary'] ?? 'Cakupan atau target progres belum lengkap.');
+            $this->notifyWarning(
+                'Validasi Semester '.$this->semester.' ditahan. '.($step['summary'] ?? 'Cakupan atau target progres belum lengkap.'),
+                'Semester belum siap divalidasi',
+                [],
+                ['Buka panduan penyelesaian dan tuntaskan indikator yang masih merah.', 'Jalankan Susun Otomatis setelah memperbaiki pemetaan atau target.'],
+            );
         }
     }
 
@@ -500,14 +536,19 @@ class ExportPreview extends Component
             ->firstOrFail();
         $valid = $planner->validate($plan);
         if ($valid) {
-            $this->notice = "RPP PAUD Semester {$semester} tervalidasi.";
+            $this->notifySuccess("RPP PAUD Semester {$semester} tervalidasi.", 'Validasi semester berhasil');
 
             return;
         }
 
         $report = app(RppCompletionService::class)->report($this->year(), $this->level());
         $step = collect($report['steps'])->firstWhere('key', "semester_{$semester}");
-        $this->errorMessage = 'Validasi Semester '.$semester.' ditahan. '.($step['summary'] ?? 'Cakupan atau target progres belum lengkap.');
+        $this->notifyWarning(
+            'Validasi Semester '.$semester.' ditahan. '.($step['summary'] ?? 'Cakupan atau target progres belum lengkap.'),
+            'Semester belum siap divalidasi',
+            [],
+            ['Tuntaskan indikator pada Panduan PAUD sampai 100%, lalu validasi kembali.'],
+        );
     }
 
     public function render(
@@ -725,8 +766,12 @@ class ExportPreview extends Component
         $this->resetErrorBag();
     }
 
-    private function applyValidationException(ValidationException $exception, array $fieldMap = [], string $fallback = 'Data tidak valid.'): void
-    {
+    private function applyValidationException(
+        ValidationException $exception,
+        array $fieldMap = [],
+        string $fallback = 'Data tidak valid.',
+        array $suggestions = ['Periksa bidang yang ditandai, perbaiki nilainya, lalu simpan kembali.'],
+    ): void {
         $firstField = null;
         foreach ($exception->errors() as $field => $messages) {
             $componentField = $fieldMap[$field] ?? $field;
@@ -734,9 +779,38 @@ class ExportPreview extends Component
             $this->addError($componentField, $message);
             $firstField ??= $componentField;
         }
-        $this->errorMessage = collect($exception->errors())->flatten()->first() ?? $fallback;
+        $this->notifyValidationException(
+            $exception,
+            rtrim($fallback, '.'),
+            $suggestions,
+            $firstField,
+            $fallback,
+        );
         if ($firstField) {
             $this->dispatch('focus-validation-field', field: $firstField);
         }
+    }
+
+    private function calendarValidationSuggestions(ValidationException $exception): array
+    {
+        $keys = array_keys($exception->errors());
+        $messages = collect($exception->errors())->flatten()->implode(' ');
+        $suggestions = [];
+
+        if (array_intersect($keys, ['starts_on', 'ends_on', 'title', 'type'])) {
+            $suggestions[] = 'Lengkapi judul, jenis, serta tanggal mulai dan akhir. Pastikan tanggal akhir tidak mendahului tanggal mulai.';
+        }
+        if (in_array('level_ids', $keys, true)) {
+            $suggestions[] = 'Pilih sedikitnya satu jenjang atau aktifkan Berlaku untuk semua jenjang.';
+        }
+        if (in_array('confirm_impact', $keys, true)) {
+            $suggestions[] = 'Tinjau jumlah materi terdampak lalu centang persetujuan pergeseran materi.';
+        }
+        if (in_array('calendar', $keys, true) || str_contains(mb_strtolower($messages), 'tidak cukup')) {
+            $suggestions[] = 'Perpanjang rentang semester atau kurangi rentang libur, evaluasi, maupun ujian agar minggu efektif mencukupi.';
+            $suggestions[] = 'Setelah kalender cukup, gunakan Susun Ulang untuk merapikan distribusi materi.';
+        }
+
+        return $suggestions ?: ['Periksa bidang kalender yang ditandai lalu simpan kembali.'];
     }
 }

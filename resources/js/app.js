@@ -1,5 +1,8 @@
 import './bootstrap';
 import { normalizeGridPatches, readCellValue } from './curriculum-grid';
+import { persistentNotifications } from './persistent-notifications';
+
+window.persistentNotifications = persistentNotifications;
 
 window.focusValidationField = (field) => {
     if (!field) return;
@@ -49,6 +52,20 @@ window.spreadsheetGrid = (domain) => ({
 
     get dirtyCount() {
         return Object.values(this.pending).reduce((total, patch) => total + Object.keys(patch.changes).length, 0);
+    },
+
+    notifyClientError(title, message, suggestions = []) {
+        window.dispatchEvent(new CustomEvent('app-notification', {
+            detail: {
+                notification: {
+                    type: 'error',
+                    title,
+                    message,
+                    details: [message],
+                    suggestions,
+                },
+            },
+        }));
     },
 
     prepareCells() {
@@ -150,6 +167,9 @@ window.spreadsheetGrid = (domain) => ({
         if (this.dirtyCount === 0 || this.saving) return;
         if (this.reason.trim().length < 5) {
             this.clientMessage = 'Alasan revisi minimal 5 karakter.';
+            this.notifyClientError('Alasan revisi belum lengkap', this.clientMessage, [
+                'Isi alasan yang menjelaskan tujuan perubahan, minimal 5 karakter.',
+            ]);
             return;
         }
         this.saving = true;
@@ -162,6 +182,9 @@ window.spreadsheetGrid = (domain) => ({
             this.clientMessage = error instanceof TypeError
                 ? error.message
                 : 'Draf tidak dapat dibaca. Batalkan draf lalu muat ulang halaman.';
+            this.notifyClientError('Draf tidak dapat dibaca', this.clientMessage, [
+                'Batalkan draf, muat ulang halaman, lalu masukkan perubahan kembali.',
+            ]);
             this.saving = false;
             return;
         }
@@ -185,6 +208,10 @@ window.spreadsheetGrid = (domain) => ({
         } catch (error) {
             console.error('Gagal mengirim revisi kurikulum.', error);
             this.clientMessage = 'Koneksi terputus atau data berubah. Muat ulang lalu coba kembali.';
+            this.notifyClientError('Perubahan gagal dikirim', this.clientMessage, [
+                'Pastikan Apache dan database XAMPP masih berjalan.',
+                'Muat ulang halaman untuk mengambil data terbaru lalu coba simpan kembali.',
+            ]);
         } finally {
             this.saving = false;
         }

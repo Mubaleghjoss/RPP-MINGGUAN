@@ -2,6 +2,7 @@
 
 namespace App\Livewire;
 
+use App\Livewire\Concerns\InteractsWithPersistentNotifications;
 use App\Models\GgbItem;
 use App\Models\GgbSyllabusLink;
 use App\Models\Level;
@@ -24,6 +25,7 @@ use Throwable;
 #[Title('Editor Kurikulum')]
 class CurriculumEditor extends Component
 {
+    use InteractsWithPersistentNotifications;
     use WithPagination;
 
     public Level $level;
@@ -109,17 +111,16 @@ class CurriculumEditor extends Component
                 $this->assertRowBelongsToLevel($this->tab, (int) ($patch['id'] ?? 0));
             }
             $batch = $revisions->applyBatch($patches, $reason, Auth::user());
-            $this->notice = "{$batch->item_count} baris disimpan dalam revisi {$batch->uuid}.";
+            $this->notifySuccess("{$batch->item_count} baris disimpan dalam revisi {$batch->uuid}.", 'Perubahan kurikulum tersimpan');
             $this->dispatch('grid-saved');
 
             return ['ok' => true, 'batch' => $batch->uuid];
         } catch (ValidationException $exception) {
-            $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Data tidak valid.';
+            $this->notifyValidationException($exception, 'Perubahan kurikulum belum valid', ['Periksa sel yang berubah dan alasan revisi.'], null, 'Data tidak valid.');
         } catch (RuntimeException $exception) {
-            $this->errorMessage = $exception->getMessage();
+            $this->notifyError($exception->getMessage(), 'Perubahan belum dapat disimpan', [$exception->getMessage()], ['Muat ulang nilai terbaru apabila data telah diubah pada tab lain.']);
         } catch (Throwable $exception) {
-            report($exception);
-            $this->errorMessage = 'Perubahan gagal disimpan. Tidak ada data yang diterapkan.';
+            $this->notifyTechnicalFailure($exception, 'Perubahan gagal disimpan. Tidak ada data yang diterapkan.', 'Editor kurikulum mengalami gangguan');
         }
 
         return ['ok' => false, 'message' => $this->errorMessage];
@@ -134,7 +135,7 @@ class CurriculumEditor extends Component
                 $this->newRelationStatus, $this->newRelationNotes ?: null,
                 $this->relationReason, Auth::user()
             );
-            $this->notice = "Relasi ditambahkan dalam revisi {$batch->uuid}.";
+            $this->notifySuccess("Relasi ditambahkan dalam revisi {$batch->uuid}.", 'Relasi GGB–Silabus ditambahkan');
             $this->reset(['newGgbCode', 'newSyllabusCode', 'newRelationNotes', 'relationReason']);
             $this->newRelationStatus = 'perlu_verifikasi';
             $this->resetPage();
@@ -142,6 +143,9 @@ class CurriculumEditor extends Component
             foreach ($exception->errors() as $key => $messages) {
                 $this->addError($key, $messages[0]);
             }
+            $this->notifyValidationException($exception, 'Relasi belum dapat ditambahkan', ['Periksa kode GGB, kode Silabus, status, dan alasan revisi.']);
+        } catch (Throwable $exception) {
+            $this->notifyTechnicalFailure($exception, 'Relasi gagal ditambahkan. Tidak ada perubahan yang diterapkan.', 'Relasi GGB–Silabus mengalami gangguan');
         }
     }
 
@@ -151,10 +155,13 @@ class CurriculumEditor extends Component
         $link = GgbSyllabusLink::query()->whereHas('syllabusItem', fn ($query) => $query->where('level_id', $this->level->id))->findOrFail($linkId);
         try {
             $batch = $revisions->deleteLink($link, $this->relationReason, Auth::user());
-            $this->notice = "Relasi diarsipkan dalam revisi {$batch->uuid}.";
+            $this->notifySuccess("Relasi diarsipkan dalam revisi {$batch->uuid}.", 'Relasi GGB–Silabus diarsipkan');
             $this->relationReason = '';
         } catch (ValidationException $exception) {
             $this->addError('relationReason', collect($exception->errors())->flatten()->first());
+            $this->notifyValidationException($exception, 'Relasi belum dapat diarsipkan', ['Isi alasan revisi minimal 5 karakter lalu coba kembali.'], 'relationReason');
+        } catch (Throwable $exception) {
+            $this->notifyTechnicalFailure($exception, 'Relasi gagal diarsipkan. Tidak ada perubahan yang diterapkan.', 'Relasi GGB–Silabus mengalami gangguan');
         }
     }
 

@@ -2,6 +2,7 @@
 
 namespace App\Livewire;
 
+use App\Livewire\Concerns\InteractsWithPersistentNotifications;
 use App\Models\RevisionBatch;
 use App\Services\CurriculumRevisionService;
 use Illuminate\Support\Facades\Auth;
@@ -12,15 +13,19 @@ use Livewire\Attributes\Url;
 use Livewire\Component;
 use Livewire\WithPagination;
 use RuntimeException;
+use Throwable;
 
 #[Layout('layouts.app')]
 #[Title('Riwayat Revisi')]
 class RevisionHistory extends Component
 {
+    use InteractsWithPersistentNotifications;
     use WithPagination;
 
     public string $restoreReason = '';
+
     public string $notice = '';
+
     public string $errorMessage = '';
 
     #[Url]
@@ -29,8 +34,15 @@ class RevisionHistory extends Component
     #[Url(as: 'baris')]
     public ?int $rowId = null;
 
-    public function updatedDomain(): void { $this->resetPage(); }
-    public function updatedRowId(): void { $this->resetPage(); }
+    public function updatedDomain(): void
+    {
+        $this->resetPage();
+    }
+
+    public function updatedRowId(): void
+    {
+        $this->resetPage();
+    }
 
     public function restore(int $batchId, CurriculumRevisionService $revisions): void
     {
@@ -38,12 +50,14 @@ class RevisionHistory extends Component
         try {
             $source = RevisionBatch::query()->findOrFail($batchId);
             $batch = $revisions->restoreBatch($source, $this->restoreReason, Auth::user());
-            $this->notice = "Revisi dipulihkan melalui batch baru {$batch->uuid}.";
+            $this->notifySuccess("Revisi dipulihkan melalui batch baru {$batch->uuid}.", 'Pemulihan revisi berhasil');
             $this->restoreReason = '';
         } catch (ValidationException $exception) {
-            $this->errorMessage = collect($exception->errors())->flatten()->first();
+            $this->notifyValidationException($exception, 'Revisi belum dapat dipulihkan', ['Isi alasan pemulihan dan pastikan data belum berubah pada revisi lain.'], 'restoreReason');
         } catch (RuntimeException $exception) {
-            $this->errorMessage = $exception->getMessage();
+            $this->notifyError($exception->getMessage(), 'Revisi belum dapat dipulihkan', [$exception->getMessage()], ['Muat ulang riwayat untuk mengambil versi terbaru lalu coba kembali.']);
+        } catch (Throwable $exception) {
+            $this->notifyTechnicalFailure($exception, 'Revisi gagal dipulihkan. Tidak ada perubahan yang diterapkan.', 'Pemulihan revisi mengalami gangguan');
         }
     }
 

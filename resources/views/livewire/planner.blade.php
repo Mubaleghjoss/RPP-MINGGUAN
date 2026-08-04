@@ -19,9 +19,6 @@
         @endforeach
     </nav>
 
-    @if($notice)<div class="mt-5 rounded-xl bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-900 ring-1 ring-emerald-200" role="status" aria-live="polite">{{ $notice }}</div>@endif
-    @if($errorMessage)<div class="mt-5 rounded-xl bg-red-50 px-4 py-3 text-sm font-medium text-red-900 ring-1 ring-red-200" role="alert">{{ $errorMessage }}</div>@endif
-
     <section class="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-label="Ringkasan RPP">
         <article class="panel p-5"><p class="text-sm text-slate-500">Cakupan</p><p class="metric-number mt-2">{{ number_format((float)$plan->coverage_percent, 1) }}%</p></article>
         <a href="{{ route('planner.show', ['level' => $level, ...($semester === 2 ? ['semester' => 2] : []), 'detail' => 'unplanned']) }}#planner-detail" class="panel group p-5 transition-[box-shadow,background-color] duration-150 ease-out hover:bg-red-50/40 hover:shadow-md {{ $detail === 'unplanned' ? 'ring-2 ring-red-600' : '' }}" @if($detail === 'unplanned') aria-current="true" @endif>

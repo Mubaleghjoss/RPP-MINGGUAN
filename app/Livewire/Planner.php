@@ -2,6 +2,7 @@
 
 namespace App\Livewire;
 
+use App\Livewire\Concerns\InteractsWithPersistentNotifications;
 use App\Models\AcademicYear;
 use App\Models\Level;
 use App\Models\RppPlan;
@@ -24,6 +25,7 @@ use Throwable;
 #[Title('Penyusun RPP Mingguan')]
 class Planner extends Component
 {
+    use InteractsWithPersistentNotifications;
     use WithPagination;
 
     public Level $level;
@@ -85,15 +87,7 @@ class Planner extends Component
 
     public function generate(RppPlanner $planner): void
     {
-        $this->errorMessage = '';
-        try {
-            $this->plan = $planner->generate($this->plan);
-            $this->log('rpp.generated', ['plan_id' => $this->plan->id, 'level' => $this->level->code, 'semester' => $this->semester]);
-            $this->notice = 'Draf otomatis diperbarui. Materi terkunci tetap dipertahankan.';
-        } catch (ValidationException $exception) {
-            $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Penyusunan otomatis gagal.';
-            $this->notice = '';
-        }
+        $this->runGenerate($planner, 'Draf otomatis diperbarui. Materi terkunci tetap dipertahankan.');
     }
 
     public function generateAll(RppPlanner $planner): void
@@ -103,35 +97,27 @@ class Planner extends Component
             $planner->generateAll();
             $this->plan->refresh();
             $this->log('rpp.generated_all', ['academic_year_id' => $this->plan->academic_year_id]);
-            $this->notice = 'Semua 34 RPP semester disusun ulang. Koreksi yang dikunci tetap dipertahankan.';
+            $this->notifySuccess('Semua 34 RPP semester disusun ulang. Koreksi yang dikunci tetap dipertahankan.', 'Penyusunan semua kelas selesai');
         } catch (ValidationException $exception) {
-            $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Penyusunan seluruh semester gagal.';
-            $this->notice = '';
+            $this->notifyValidationException($exception, 'Penyusunan semua kelas ditahan', ['Periksa minggu efektif, alokasi, dan pemetaan materi pada jenjang yang disebutkan.'], null, 'Penyusunan seluruh semester gagal.');
+        } catch (Throwable $exception) {
+            $this->notifyTechnicalFailure($exception, 'Penyusunan seluruh kelas gagal. Tidak ada perubahan yang diterapkan.', 'Penyusunan semua kelas mengalami gangguan');
         }
     }
 
     public function fillEmpty(RppPlanner $planner): void
     {
-        $this->generate($planner);
-        if ($this->errorMessage === '') {
-            $this->notice = 'Minggu efektif yang kosong telah diisi sejauh alokasi sumber tersedia.';
-        }
+        $this->runGenerate($planner, 'Minggu efektif yang kosong telah diisi sejauh alokasi sumber tersedia.');
     }
 
     public function rebalance(RppPlanner $planner): void
     {
-        $this->generate($planner);
-        if ($this->errorMessage === '') {
-            $this->notice = 'Beban otomatis diratakan kembali tanpa mengubah materi terkunci.';
-        }
+        $this->runGenerate($planner, 'Beban otomatis diratakan kembali tanpa mengubah materi terkunci.');
     }
 
     public function restartFromSyllabus(RppPlanner $planner): void
     {
-        $this->generate($planner);
-        if ($this->errorMessage === '') {
-            $this->notice = 'Bagian otomatis diulang dari urutan silabus; koreksi terkunci tetap aman.';
-        }
+        $this->runGenerate($planner, 'Bagian otomatis diulang dari urutan silabus; koreksi terkunci tetap aman.');
     }
 
     public function validatePlan(RppPlanner $planner): void
@@ -139,21 +125,34 @@ class Planner extends Component
         $valid = $planner->validate($this->plan);
         $this->plan->refresh();
         $this->log('rpp.validation_attempted', ['plan_id' => $this->plan->id, 'valid' => $valid]);
-        $this->notice = $valid ? 'RPP dinyatakan tervalidasi.' : 'Validasi ditahan karena masih ada materi yang belum dijadwalkan.';
+        if ($valid) {
+            $this->notifySuccess('RPP dinyatakan tervalidasi.', 'Validasi RPP berhasil');
+        } else {
+            $this->notifyWarning(
+                'Validasi ditahan karena masih ada materi yang belum dijadwalkan.',
+                'RPP belum lengkap',
+                [],
+                ['Buka kartu Belum dijadwalkan, lengkapi materi yang tersisa, lalu validasi kembali.'],
+            );
+        }
     }
 
     public function toggleLock(int $placementId, RppBulkActionService $bulk): void
     {
-        $item = RppWeekItem::query()->where('rpp_plan_id', $this->plan->id)->findOrFail($placementId);
-        $action = $item->is_locked ? 'unlock' : 'lock';
-        $bulk->updatePlacements($this->plan, [$item->id], $action, null, 'Aksi satuan dari planner', Auth::id());
-        $this->afterBulk($item->is_locked ? 'Kunci materi dilepas.' : 'Materi dikunci.');
+        $this->runBulk(function () use ($placementId, $bulk) {
+            $item = RppWeekItem::query()->where('rpp_plan_id', $this->plan->id)->findOrFail($placementId);
+            $action = $item->is_locked ? 'unlock' : 'lock';
+            $bulk->updatePlacements($this->plan, [$item->id], $action, null, 'Aksi satuan dari planner', Auth::id());
+            $this->afterBulk($item->is_locked ? 'Kunci materi dilepas.' : 'Materi dikunci.');
+        });
     }
 
     public function movePlacement(int $placementId, int $weekId, RppBulkActionService $bulk): void
     {
-        $bulk->updatePlacements($this->plan, [$placementId], 'move', $weekId, 'Aksi satuan dari planner', Auth::id());
-        $this->afterBulk('Materi dipindahkan dan otomatis dikunci.');
+        $this->runBulk(function () use ($placementId, $weekId, $bulk) {
+            $bulk->updatePlacements($this->plan, [$placementId], 'move', $weekId, 'Aksi satuan dari planner', Auth::id());
+            $this->afterBulk('Materi dipindahkan dan otomatis dikunci.');
+        });
     }
 
     public function applyPlacementBulk(string $action, RppBulkActionService $bulk): void
@@ -188,7 +187,12 @@ class Planner extends Component
         $this->errorMessage = '';
         $item = $this->unplannedQuery()->find($syllabusItemId);
         if (! $item || $item->needs_allocation || blank($item->allocation_text) || (int) $item->recommended_sessions < 1) {
-            $this->errorMessage = 'Materi belum siap dijadwalkan. Lengkapi alokasi dan jumlah pertemuan minimal 1.';
+            $this->notifyWarning(
+                'Materi belum siap dijadwalkan. Lengkapi alokasi dan jumlah pertemuan minimal 1.',
+                'Materi belum siap',
+                [],
+                ['Buka Edit Silabus, isi alokasi dan jumlah pertemuan, kemudian kembali ke Planner.'],
+            );
 
             return;
         }
@@ -312,10 +316,15 @@ class Planner extends Component
         try {
             $callback();
         } catch (ValidationException $exception) {
-            $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Tindakan tidak valid.';
+            $this->notifyValidationException(
+                $exception,
+                'Tindakan Planner belum dapat dijalankan',
+                ['Periksa pilihan materi, alasan tindakan, dan minggu efektif tujuan.'],
+                null,
+                'Tindakan tidak valid.',
+            );
         } catch (Throwable $exception) {
-            report($exception);
-            $this->errorMessage = 'Tindakan gagal. Tidak ada perubahan yang diterapkan.';
+            $this->notifyTechnicalFailure($exception, 'Tindakan gagal. Tidak ada perubahan yang diterapkan.', 'Planner mengalami gangguan');
         }
     }
 
@@ -324,7 +333,7 @@ class Planner extends Component
         $this->plan->refresh();
         $this->bulkReason = '';
         $this->bulkWeekId = null;
-        $this->notice = $notice;
+        $this->notifySuccess($notice, 'Planner diperbarui');
     }
 
     private function afterScheduling(string $notice): void
@@ -340,5 +349,25 @@ class Planner extends Component
         $this->manualSyllabusId = null;
         $this->manualWeekId = null;
         $this->manualReason = '';
+    }
+
+    private function runGenerate(RppPlanner $planner, string $successMessage): void
+    {
+        $this->errorMessage = '';
+        try {
+            $this->plan = $planner->generate($this->plan);
+            $this->log('rpp.generated', ['plan_id' => $this->plan->id, 'level' => $this->level->code, 'semester' => $this->semester]);
+            $this->notifySuccess($successMessage, 'Penyusunan RPP selesai');
+        } catch (ValidationException $exception) {
+            $this->notifyValidationException(
+                $exception,
+                'Penyusunan RPP ditahan',
+                ['Periksa minggu efektif, alokasi, pemetaan kolom, dan target progres.'],
+                null,
+                'Penyusunan otomatis gagal.',
+            );
+        } catch (Throwable $exception) {
+            $this->notifyTechnicalFailure($exception, 'Penyusunan RPP gagal. Tidak ada perubahan yang diterapkan.', 'Penyusunan RPP mengalami gangguan');
+        }
     }
 }

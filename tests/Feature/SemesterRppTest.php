@@ -121,7 +121,7 @@ class SemesterRppTest extends TestCase
             ->set('targetReason', 'target terukur admin')
             ->call('saveTarget')
             ->assertHasNoErrors()
-            ->assertSee('Target disimpan dalam revisi');
+            ->assertDispatched('app-notification', fn (string $name, array $params): bool => str_contains($params['notification']['message'] ?? '', 'Target disimpan dalam revisi'));
         $this->assertDatabaseHas('rpp_progress_targets', ['syllabus_item_id' => $material->id, 'unit_label' => 'ayat', 'range_start' => 1, 'range_end' => 12, 'source' => 'manual']);
         $this->assertDatabaseHas('revision_items', ['revisable_type' => 'progress_target']);
     }

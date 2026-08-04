@@ -112,6 +112,48 @@ class AnnualGgbCalendarTest extends TestCase
         $this->assertSame($weeks[0]->id, $plans[1]->items()->orderBy('position')->first()->calendar_week_id);
     }
 
+    public function test_calendar_reflow_moves_repeated_material_from_latest_week_first_without_unique_collision(): void
+    {
+        [$level, $year, $plans, $weeks, $column, $syllabus] = $this->fixture();
+        $first = $this->placement($plans[1], $weeks[0], $column, $syllabus, true, 'Materi berulang', 1, 'syllabus:'.$syllabus->id);
+        $second = $this->placement($plans[1], $weeks[1], $column, $syllabus, false, 'Materi berulang', 2, 'syllabus:'.$syllabus->id);
+        $calendar = app(AcademicCalendarService::class);
+        $user = User::factory()->create();
+
+        $event = $calendar->saveEvent($year, [
+            'type' => 'holiday', 'title' => 'Libur minggu pertama', 'details' => 'Menguji materi berulang.',
+            'starts_on' => '2026-07-06', 'ends_on' => '2026-07-12', 'applies_to_all' => false,
+            'level_ids' => [$level->id], 'confirm_impact' => true,
+        ], $user->id);
+
+        $this->assertSame($weeks[1]->id, $first->fresh()->calendar_week_id);
+        $this->assertSame($weeks[2]->id, $second->fresh()->calendar_week_id);
+        $this->assertTrue($first->fresh()->is_locked);
+        $this->assertDatabaseHas('calendar_events', ['id' => $event->id, 'title' => 'Libur minggu pertama']);
+    }
+
+    public function test_calendar_validation_dispatches_persistent_notification_with_cause_and_recovery(): void
+    {
+        [$level] = $this->fixture();
+        $user = User::factory()->create();
+
+        Livewire::actingAs($user)->withQueryParams(['level' => $level->id, 'semester' => 1])
+            ->test(ExportPreview::class)
+            ->set('calendarTitle', '')
+            ->set('calendarStartsOn', '2026-07-06')
+            ->set('calendarEndsOn', '2026-07-12')
+            ->call('saveCalendarEvent')
+            ->assertDispatched('app-notification', function (string $name, array $params): bool {
+                $notification = $params['notification'] ?? [];
+
+                return $notification['type'] === 'error'
+                    && $notification['title'] === 'Rentang kalender tidak dapat disimpan'
+                    && $notification['focus_field'] === 'calendarTitle'
+                    && count($notification['details'] ?? []) >= 1
+                    && count($notification['suggestions'] ?? []) >= 1;
+            });
+    }
+
     private function fixture(): array
     {
         $level = Level::query()->create(['code' => 'UJI', 'name' => 'Jenjang Uji', 'stage' => 'PAUD', 'sort_order' => 1]);
@@ -149,8 +191,8 @@ class AnnualGgbCalendarTest extends TestCase
         return GgbItem::query()->create(['level_id' => $level->id, 'source_document_id' => $document->id, 'parent_id' => $parent?->id, 'source_key' => 'ggb:uji:'.$order, 'stable_code' => 'UJI / ADAB / '.str_pad((string) $order, 3, '0', STR_PAD_LEFT), 'kind' => $kind, 'aspect' => 'Akhlaqul Karimah', 'subaspect' => 'Adab', 'title' => $title, 'raw_text' => $title, 'source_page' => 1, 'sort_order' => $order]);
     }
 
-    private function placement(RppPlan $plan, CalendarWeek $week, RppMatrixColumn $column, SyllabusItem $syllabus, bool $locked, string $content, int $position = 1): RppWeekItem
+    private function placement(RppPlan $plan, CalendarWeek $week, RppMatrixColumn $column, SyllabusItem $syllabus, bool $locked, string $content, int $position = 1, ?string $fingerprint = null): RppWeekItem
     {
-        return RppWeekItem::query()->create(['rpp_plan_id' => $plan->id, 'calendar_week_id' => $week->id, 'syllabus_item_id' => $syllabus->id, 'source_fingerprint' => 'test:'.$position, 'occurrence_no' => 1, 'rpp_matrix_column_id' => $column->id, 'strand' => $column->label, 'content' => $content, 'source' => $locked ? 'manual' : 'auto', 'is_locked' => $locked, 'position' => $position, 'lock_version' => 0]);
+        return RppWeekItem::query()->create(['rpp_plan_id' => $plan->id, 'calendar_week_id' => $week->id, 'syllabus_item_id' => $syllabus->id, 'source_fingerprint' => $fingerprint ?? 'test:'.$position, 'occurrence_no' => 1, 'rpp_matrix_column_id' => $column->id, 'strand' => $column->label, 'content' => $content, 'source' => $locked ? 'manual' : 'auto', 'is_locked' => $locked, 'position' => $position, 'lock_version' => 0]);
     }
 }

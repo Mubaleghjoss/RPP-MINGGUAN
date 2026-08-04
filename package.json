@@ -5,7 +5,7 @@
     "scripts": {
         "build": "vite build",
         "dev": "vite",
-        "test:js": "node --test tests/Frontend/curriculum-grid.test.js"
+        "test:js": "node --test tests/Frontend/*.test.js"
     },
     "devDependencies": {
         "@tailwindcss/vite": "^4.0.0",
