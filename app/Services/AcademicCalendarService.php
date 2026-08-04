@@ -9,6 +9,7 @@ use App\Models\CalendarWeek;
 use App\Models\RevisionBatch;
 use App\Models\RevisionItem;
 use App\Models\RppAnnualValidation;
+use App\Models\RppMaterialCatalogItem;
 use App\Models\RppPlan;
 use App\Models\RppWeekItem;
 use Carbon\CarbonImmutable;
@@ -21,8 +22,6 @@ use Illuminate\Validation\ValidationException;
 class AcademicCalendarService
 {
     public const TYPES = ['holiday', 'religious_holiday', 'evaluation', 'exam'];
-
-    public function __construct(private readonly RppMaterialCatalogService $catalog) {}
 
     public function semester(AcademicYear $year, int $semester): AcademicSemester
     {
@@ -91,7 +90,8 @@ class AcademicCalendarService
         if (! $startsOn || ! $endsOn || $endsOn->lt($startsOn)) {
             return [
                 'weeks' => collect(), 'plans' => collect(), 'item_count' => 0,
-                'locked_count' => 0, 'combined_groups' => 0, 'shortages' => collect(),
+                'locked_count' => 0, 'moved_count' => 0, 'shifted_locked_count' => 0,
+                'combined_groups' => 0, 'shortages' => collect(),
             ];
         }
 
@@ -100,25 +100,36 @@ class AcademicCalendarService
             : collect($data['level_ids'] ?? [])->map(fn ($id) => (int) $id)->unique();
         $weeks = $year->weeks()->whereDate('starts_on', '<=', $endsOn)
             ->whereDate('starts_on', '>=', $startsOn->subDays(6))->orderBy('week_number')->get();
-        $plans = $year->plans()->whereIn('level_id', $levelIds)->with(['items.week'])->get();
+        $plans = $year->plans()->whereIn('level_id', $levelIds)->with(['items.week', 'items.matrixColumn'])->get();
+        $yearWeeks = $year->weeks()->orderBy('week_number')->get();
+        $effectiveWeekIds = $this->effectiveWeekIdsForPlans($plans, $eventId);
         $summary = collect();
         $shortages = collect();
         $combinedGroups = 0;
+        $movedItems = 0;
+        $shiftedLockedItems = 0;
 
         foreach ($plans as $plan) {
             $planWeeks = $weeks->where('semester', (int) $plan->semester);
             if ($planWeeks->isEmpty()) {
                 continue;
             }
-            $existingBlocked = $this->blockedWeekIds($plan, $eventId);
-            $newlyBlocked = $planWeeks->pluck('id')->diff($existingBlocked)->values();
+            $currentlyEffective = $effectiveWeekIds->get($plan->id, collect());
+            $newlyBlocked = $planWeeks->pluck('id')->intersect($currentlyEffective)->values();
             $items = $plan->items->whereIn('calendar_week_id', $newlyBlocked);
-            $available = $this->availableWeeksAfter($plan, $planWeeks->pluck('id'), $eventId);
+            $available = $yearWeeks->where('semester', (int) $plan->semester)
+                ->whereIn('id', $currentlyEffective->diff($planWeeks->pluck('id')))
+                ->values();
             if ($available->isEmpty()) {
                 $shortages->push(['plan_id' => $plan->id, 'level' => $plan->level?->name, 'semester' => $plan->semester]);
             }
+            $reflow = $available->isEmpty()
+                ? ['changes' => collect(), 'moved_count' => 0, 'locked_moved_count' => 0]
+                : $this->calculateReflowChanges($plan, $available);
             $planCombined = $this->combinedGroupCount($plan, $available);
             $combinedGroups += $planCombined;
+            $movedItems += $reflow['moved_count'];
+            $shiftedLockedItems += $reflow['locked_moved_count'];
             $summary->push([
                 'plan_id' => $plan->id,
                 'level_id' => $plan->level_id,
@@ -126,6 +137,8 @@ class AcademicCalendarService
                 'week_ids' => $newlyBlocked->all(),
                 'item_count' => $items->count(),
                 'locked_count' => $items->where('is_locked', true)->count(),
+                'moved_count' => $reflow['moved_count'],
+                'shifted_locked_count' => $reflow['locked_moved_count'],
                 'effective_week_count' => $available->count(),
                 'combined_groups' => $planCombined,
             ]);
@@ -136,12 +149,14 @@ class AcademicCalendarService
             'plans' => $summary,
             'item_count' => $summary->sum('item_count'),
             'locked_count' => $summary->sum('locked_count'),
+            'moved_count' => $movedItems,
+            'shifted_locked_count' => $shiftedLockedItems,
             'combined_groups' => $combinedGroups,
             'shortages' => $shortages,
         ];
     }
 
-    public function saveEvent(AcademicYear $year, array $data, ?int $userId, ?int $eventId = null): CalendarEvent
+    public function saveEvent(AcademicYear $year, array $data, ?int $userId, ?int $eventId = null): array
     {
         Validator::make($data, [
             'type' => ['required', 'in:'.implode(',', self::TYPES)],
@@ -166,10 +181,16 @@ class AcademicCalendarService
         if ($preview['item_count'] > 0 && empty($data['confirm_impact'])) {
             throw ValidationException::withMessages(['confirm_impact' => 'Konfirmasikan pergeseran materi sebelum menyimpan rentang.']);
         }
-        $levelIds = $preview['plans']->pluck('level_id')->unique()->values();
+        $oldEvent = $eventId
+            ? CalendarEvent::query()->where('academic_year_id', $year->id)->with('levels:id')->findOrFail($eventId)
+            : null;
+        $oldPlanIds = $oldEvent ? $this->eventPlanIds($oldEvent) : collect();
+        $newPlanIds = $preview['plans']->pluck('plan_id');
+        $affectedPlanIds = $oldPlanIds->merge($newPlanIds)->unique()->values();
+        $levelIds = RppPlan::query()->whereIn('id', $affectedPlanIds)->distinct()->pluck('level_id');
         $annualStates = $this->annualValidationStates($year, $levelIds);
 
-        return DB::transaction(function () use ($year, $data, $userId, $eventId, $preview, $levelIds, $annualStates) {
+        return DB::transaction(function () use ($year, $data, $userId, $eventId, $preview, $levelIds, $annualStates, $affectedPlanIds) {
             $event = $eventId
                 ? CalendarEvent::query()->where('academic_year_id', $year->id)->lockForUpdate()->findOrFail($eventId)
                 : new CalendarEvent(['academic_year_id' => $year->id]);
@@ -195,41 +216,67 @@ class AcademicCalendarService
                 'before_values' => $before, 'after_values' => $event->only(['type', 'title', 'details', 'starts_on', 'ends_on', 'applies_to_all']),
                 'before_lock_version' => max(0, $event->lock_version - 1), 'after_lock_version' => $event->lock_version,
             ]);
-            $moved = 0;
-            foreach ($preview['plans'] as $impact) {
-                if ($impact['week_ids'] === []) {
-                    continue;
-                }
-                $plan = RppPlan::query()->with(['items.week'])->lockForUpdate()->findOrFail($impact['plan_id']);
-                $available = $this->weeksForPlan($plan, true);
-                $moved += $this->reflowPlan($plan, $available, $batch, $userId);
-                app(RppMatrixFillService::class)->fill($plan, $userId);
-                $plan->update(['status' => 'draft', 'validated_at' => null]);
+            $changes = collect();
+            $reflowPlanIds = $preview['plans']->filter(fn (array $impact) => $impact['week_ids'] !== [])->pluck('plan_id');
+            $reflowPlans = RppPlan::query()->whereIn('id', $reflowPlanIds)->lockForUpdate()->get();
+            $lockedItems = RppWeekItem::query()->whereIn('rpp_plan_id', $reflowPlanIds)
+                ->with(['week', 'matrixColumn'])->lockForUpdate()->get()->groupBy('rpp_plan_id');
+            $reflowPlans->each(fn (RppPlan $plan) => $plan->setRelation('items', $lockedItems->get($plan->id, collect())));
+            $effectiveWeekIds = $this->effectiveWeekIdsForPlans($reflowPlans);
+            $yearWeeks = $year->weeks()->orderBy('week_number')->get()->keyBy('id');
+            foreach ($reflowPlans as $plan) {
+                $available = $effectiveWeekIds->get($plan->id, collect())
+                    ->map(fn ($weekId) => $yearWeeks->get($weekId))->filter()->values();
+                $changes = $changes->concat($this->calculateReflowChanges($plan, $available)['changes']);
             }
-            $batch->update(['item_count' => $batch->items()->count()]);
-            $this->preserveAnnualValidations($year, $levelIds, $annualStates);
-            $this->log($userId, 'calendar.range_saved', ['event_id' => $event->id, 'moved_items' => $moved]);
+            $moved = $changes->count();
+            $lockedMoved = $changes->where('is_locked', true)->count();
+            $this->persistReflowChanges($changes, $batch, $userId);
 
-            return $event->fresh('levels');
-        });
+            $plans = RppPlan::query()->whereIn('id', $affectedPlanIds)->get();
+            $validatedDrafted = $plans->where('status', 'validated')->count();
+            $matrixRepairs = 0;
+            $plansNeedingRepair = $this->plansNeedingMatrixFill($plans);
+            foreach ($plans as $plan) {
+                $plan->unsetRelation('items');
+                if ($plansNeedingRepair->contains($plan->id)) {
+                    app(RppMatrixFillService::class)->fill($plan, $userId);
+                    $matrixRepairs++;
+                }
+            }
+            RppPlan::query()->whereIn('id', $affectedPlanIds)->update(['status' => 'draft', 'validated_at' => null]);
+            $batch->update(['item_count' => 1 + $changes->count()]);
+            $annualPreserved = $this->preserveAnnualValidations($year, $levelIds, $annualStates);
+            $result = [
+                'event' => $event->fresh('levels'),
+                'affected_plans' => $affectedPlanIds->count(),
+                'range_items' => (int) $preview['item_count'],
+                'moved_items' => $moved,
+                'locked_items' => $lockedMoved,
+                'combined_groups' => (int) $preview['combined_groups'],
+                'drafted_plans' => $plans->count(),
+                'validated_plans_drafted' => $validatedDrafted,
+                'matrix_repairs' => $matrixRepairs,
+                'annual_validations_preserved' => $annualPreserved,
+                'batch_uuid' => $batch->uuid,
+            ];
+            $this->log($userId, 'calendar.range_saved', ['event_id' => $event->id] + collect($result)->except(['event'])->all());
+
+            return $result;
+        }, 3);
     }
 
     public function deleteEvent(CalendarEvent $event, ?int $userId): void
     {
         DB::transaction(function () use ($event, $userId) {
             $yearId = $event->academic_year_id;
-            $levelIds = $event->applies_to_all
-                ? RppPlan::query()->where('academic_year_id', $yearId)->distinct()->pluck('level_id')
-                : $event->levels()->pluck('levels.id');
+            $planIds = $this->eventPlanIds($event);
+            $levelIds = RppPlan::query()->whereIn('id', $planIds)->distinct()->pluck('level_id');
             $year = AcademicYear::query()->findOrFail($yearId);
             $annualStates = $this->annualValidationStates($year, $levelIds);
             $snapshot = $event->only(['type', 'title', 'details', 'starts_on', 'ends_on', 'applies_to_all']);
             $event->delete();
-            RppPlan::query()->where('academic_year_id', $yearId)->whereIn('level_id', $levelIds)->get()
-                ->each(function (RppPlan $plan) use ($userId) {
-                    app(RppMatrixFillService::class)->fill($plan, $userId);
-                    $plan->update(['status' => 'draft', 'validated_at' => null]);
-                });
+            RppPlan::query()->whereIn('id', $planIds)->update(['status' => 'draft', 'validated_at' => null]);
             $this->preserveAnnualValidations($year, $levelIds, $annualStates);
             $this->log($userId, 'calendar.range_deleted', $snapshot + ['event_id' => $event->id]);
         });
@@ -346,10 +393,15 @@ class AcademicCalendarService
                 ]);
             }
 
-            $moved = 0;
+            $allChanges = collect();
             $combined = 0;
-            $plans = $year->plans()->with(['items.week'])->lockForUpdate()->get();
+            $plans = $year->plans()->lockForUpdate()->get();
             foreach ($plans as $plan) {
+                $plan->setRelation('items', RppWeekItem::query()
+                    ->where('rpp_plan_id', $plan->id)
+                    ->with(['week', 'matrixColumn'])
+                    ->lockForUpdate()
+                    ->get());
                 $available = $this->weeksForPlan($plan, true)->whereIn('id', $keptIds)->values();
                 if ($available->isEmpty()) {
                     throw ValidationException::withMessages([
@@ -357,8 +409,17 @@ class AcademicCalendarService
                     ]);
                 }
                 $combined += $this->combinedGroupCount($plan, $available);
-                $moved += $this->reflowPlan($plan, $available, $batch, $userId);
-                app(RppMatrixFillService::class)->fill($plan, $userId);
+                $allChanges = $allChanges->concat($this->calculateReflowChanges($plan, $available)['changes']);
+            }
+            $moved = $allChanges->count();
+            $this->persistReflowChanges($allChanges, $batch, $userId);
+
+            foreach ($plans as $plan) {
+                $plan->unsetRelation('items');
+                $stats = app(RppMatrixFillService::class)->stats($plan);
+                if ($stats['missing'] > 0) {
+                    app(RppMatrixFillService::class)->fill($plan, $userId);
+                }
                 $plan->update(['status' => 'draft', 'validated_at' => null]);
             }
 
@@ -396,6 +457,42 @@ class AcademicCalendarService
         return $type === 'effective' ? 'Minggu Efektif' : $this->typeLabel($type);
     }
 
+    private function effectiveWeekIdsForPlans(Collection $plans, ?int $excludeEventId = null): Collection
+    {
+        if ($plans->isEmpty()) {
+            return collect();
+        }
+
+        $academicYearId = (int) $plans->first()->academic_year_id;
+        $weeks = CalendarWeek::query()
+            ->where('academic_year_id', $academicYearId)
+            ->where('is_effective', true)
+            ->orderBy('week_number')
+            ->get()
+            ->groupBy('semester');
+        $events = CalendarEvent::query()
+            ->where('academic_year_id', $academicYearId)
+            ->when($excludeEventId, fn ($query) => $query->whereKeyNot($excludeEventId))
+            ->with('levels:id')
+            ->get();
+
+        return $plans->mapWithKeys(function (RppPlan $plan) use ($weeks, $events) {
+            $levelEvents = $events->filter(fn (CalendarEvent $event) => $event->applies_to_all
+                || $event->levels->contains('id', $plan->level_id));
+            $effectiveIds = $weeks->get((int) $plan->semester, collect())
+                ->reject(function (CalendarWeek $week) use ($levelEvents) {
+                    $weekEnd = $week->starts_on->copy()->addDays(6);
+
+                    return $levelEvents->contains(fn (CalendarEvent $event) => $event->starts_on->lte($weekEnd)
+                        && $event->ends_on->gte($week->starts_on));
+                })
+                ->pluck('id')
+                ->values();
+
+            return [$plan->id => $effectiveIds];
+        });
+    }
+
     private function blockedWeekIds(RppPlan $plan, ?int $excludeId = null): Collection
     {
         $events = $this->eventsForLevel($plan->academic_year_id, $plan->level_id, $excludeId);
@@ -419,15 +516,73 @@ class AcademicCalendarService
     private function combinedGroupCount(RppPlan $plan, Collection $available): int
     {
         $capacity = $available->count();
+        $items = $plan->relationLoaded('items') ? $plan->items : $plan->items()->get();
         if ($capacity === 0) {
-            return $plan->items()->exists() ? 1 : 0;
+            return $items->isNotEmpty() ? 1 : 0;
         }
 
-        return $plan->items()->get()->groupBy(fn ($item) => $item->rpp_matrix_column_id ?: 0)
+        return $items->groupBy(fn ($item) => $item->rpp_matrix_column_id ?: 0)
             ->sum(fn (Collection $items) => max(0, $items->pluck('calendar_week_id')->unique()->count() - $capacity));
     }
 
-    private function reflowPlan(RppPlan $plan, Collection $available, RevisionBatch $batch, ?int $userId): int
+    private function eventPlanIds(CalendarEvent $event): Collection
+    {
+        $levelIds = $event->applies_to_all
+            ? RppPlan::query()->where('academic_year_id', $event->academic_year_id)->distinct()->pluck('level_id')
+            : $event->levels()->pluck('levels.id');
+        $semesters = CalendarWeek::query()
+            ->where('academic_year_id', $event->academic_year_id)
+            ->whereDate('starts_on', '<=', $event->ends_on)
+            ->whereDate('starts_on', '>=', $event->starts_on->copy()->subDays(6))
+            ->distinct()
+            ->pluck('semester');
+
+        return RppPlan::query()
+            ->where('academic_year_id', $event->academic_year_id)
+            ->whereIn('level_id', $levelIds)
+            ->whereIn('semester', $semesters)
+            ->pluck('id');
+    }
+
+    private function plansNeedingMatrixFill(Collection $plans): Collection
+    {
+        if ($plans->isEmpty()) {
+            return collect();
+        }
+
+        $plans->load('level.matrixColumns');
+        $effectiveWeekIds = $this->effectiveWeekIdsForPlans($plans);
+        $occupied = RppWeekItem::query()
+            ->whereIn('rpp_plan_id', $plans->pluck('id'))
+            ->whereNotNull('rpp_matrix_column_id')
+            ->get(['rpp_plan_id', 'calendar_week_id', 'rpp_matrix_column_id'])
+            ->groupBy('rpp_plan_id');
+
+        return $plans->filter(function (RppPlan $plan) use ($effectiveWeekIds, $occupied) {
+            $weekIds = $effectiveWeekIds->get($plan->id, collect());
+            $columnIds = $plan->level->matrixColumns->where('is_active', true)->pluck('id');
+            if ($weekIds->isEmpty() || $columnIds->isEmpty()) {
+                return false;
+            }
+            $filled = $occupied->get($plan->id, collect())
+                ->whereIn('calendar_week_id', $weekIds)
+                ->whereIn('rpp_matrix_column_id', $columnIds)
+                ->map(fn (RppWeekItem $item) => $item->calendar_week_id.':'.$item->rpp_matrix_column_id)
+                ->unique()
+                ->count();
+
+            return $filled < ($weekIds->count() * $columnIds->count());
+        })->pluck('id')->values();
+    }
+
+    /**
+     * Calculate the complete final identity of every affected placement before
+     * writing anything. This keeps the reflow deterministic and lets the
+     * persistence phase avoid thousands of row-by-row queries.
+     *
+     * @return array{changes: Collection<int, array<string, mixed>>, moved_count: int, locked_moved_count: int}
+     */
+    private function calculateReflowChanges(RppPlan $plan, Collection $available): array
     {
         if ($available->isEmpty()) {
             throw ValidationException::withMessages(['calendar' => 'Semester tidak mempunyai minggu efektif untuk menampung materi.']);
@@ -472,8 +627,14 @@ class AcademicCalendarService
                 'source_week_number' => (int) ($item->week?->week_number ?? 0),
             ];
         });
-        $occurrences = [];
-        foreach ($rows->groupBy(fn (array $row) => $row['target']->id.'|'.$row['item']->source_fingerprint) as $identityRows) {
+        $weekChangedRows = $rows->filter(fn (array $row) => (int) $row['item']->calendar_week_id !== (int) $row['target']->id);
+        $affectedWeekIds = $weekChangedRows
+            ->flatMap(fn (array $row) => [$row['item']->calendar_week_id, $row['target']->id])
+            ->unique()
+            ->values();
+        $occurrences = $rows->mapWithKeys(fn (array $row) => [$row['item']->id => (int) $row['item']->occurrence_no])->all();
+        foreach ($rows->filter(fn (array $row) => $affectedWeekIds->contains($row['target']->id))
+            ->groupBy(fn (array $row) => $row['target']->id.'|'.$row['item']->source_fingerprint) as $identityRows) {
             foreach ($identityRows->sortBy(fn (array $row) => sprintf(
                 '%08d:%08d:%08d',
                 $row['source_week_number'],
@@ -483,8 +644,9 @@ class AcademicCalendarService
                 $occurrences[$row['item']->id] = $index + 1;
             }
         }
-        $positions = [];
-        foreach ($rows->groupBy(fn (array $row) => $row['target']->id) as $weekRows) {
+        $positions = $rows->mapWithKeys(fn (array $row) => [$row['item']->id => (int) $row['item']->position])->all();
+        foreach ($rows->filter(fn (array $row) => $affectedWeekIds->contains($row['target']->id))
+            ->groupBy(fn (array $row) => $row['target']->id) as $weekRows) {
             foreach ($weekRows->sortBy(fn (array $row) => sprintf(
                 '%08d:%08d:%08d:%08d',
                 $row['item']->matrixColumn?->sort_order ?? 999999,
@@ -495,41 +657,120 @@ class AcademicCalendarService
                 $positions[$row['item']->id] = $index + 1;
             }
         }
+        $identities = [];
+        foreach ($rows as $row) {
+            $identity = implode('|', [
+                $plan->id,
+                $row['target']->id,
+                $row['source_fingerprint'],
+                $occurrences[$row['item']->id],
+            ]);
+            if (isset($identities[$identity])) {
+                throw ValidationException::withMessages([
+                    'calendar' => 'Hasil pergeseran memiliki identitas materi ganda. Muat ulang lalu periksa minggu tujuan.',
+                ]);
+            }
+            $identities[$identity] = true;
+        }
+
         $changes = $rows->filter(fn (array $row) => (int) $row['item']->calendar_week_id !== (int) $row['target']->id
             || (int) $row['item']->occurrence_no !== (int) $occurrences[$row['item']->id]
-            || (int) $row['item']->position !== (int) $positions[$row['item']->id]);
+            || (int) $row['item']->position !== (int) $positions[$row['item']->id])
+            ->map(function (array $row) use ($occurrences, $positions) {
+                $item = $row['item'];
+                $beforeVersion = (int) $item->lock_version;
+                $before = [
+                    'calendar_week_id' => $item->calendar_week_id,
+                    'occurrence_no' => $item->occurrence_no,
+                    'position' => $item->position,
+                ];
+                $after = [
+                    'calendar_week_id' => $row['target']->id,
+                    'occurrence_no' => $occurrences[$item->id],
+                    'position' => $positions[$item->id],
+                ];
 
-        foreach ($changes as $row) {
-            $item = $row['item'];
-            $item->forceFill(['source_fingerprint' => 'tmp-calendar:'.$item->id.':'.Str::uuid()])->saveQuietly();
+                return [
+                    'id' => $item->id,
+                    'plan_id' => $item->rpp_plan_id,
+                    'source_fingerprint' => $row['source_fingerprint'],
+                    'source_week_number' => $row['source_week_number'],
+                    'before' => $before,
+                    'after' => $after,
+                    'before_lock_version' => $beforeVersion,
+                    'after_lock_version' => $beforeVersion + 1,
+                    'week_changed' => (int) $before['calendar_week_id'] !== (int) $after['calendar_week_id'],
+                    'is_locked' => (bool) $item->is_locked,
+                ];
+            })->values();
+
+        return [
+            'changes' => $changes,
+            'moved_count' => $changes->count(),
+            'locked_moved_count' => $changes->where('is_locked', true)->count(),
+        ];
+    }
+
+    private function persistReflowChanges(Collection $changes, RevisionBatch $batch, ?int $userId): void
+    {
+        if ($changes->isEmpty()) {
+            return;
         }
-        foreach ($changes->sortByDesc('source_week_number') as $row) {
-            $item = $row['item'];
-            $target = $row['target'];
-            $beforeVersion = (int) $item->lock_version;
-            $before = [
-                'calendar_week_id' => $item->calendar_week_id,
-                'occurrence_no' => $item->occurrence_no,
-                'position' => $item->position,
-            ];
-            $after = [
-                'calendar_week_id' => $target->id,
-                'occurrence_no' => $occurrences[$item->id],
-                'position' => $positions[$item->id],
-            ];
-            $item->forceFill($after + [
-                'source_fingerprint' => $row['source_fingerprint'],
-                'lock_version' => $beforeVersion + 1,
-                'last_edited_by' => $userId,
-            ])->save();
-            RevisionItem::query()->create([
-                'revision_batch_id' => $batch->id, 'revisable_type' => 'rpp', 'revisable_id' => $item->id,
-                'before_values' => $before, 'after_values' => $after,
-                'before_lock_version' => $beforeVersion, 'after_lock_version' => $beforeVersion + 1,
+
+        $token = str_replace('-', '', $batch->uuid);
+        $driver = DB::connection()->getDriverName();
+        $chunkSize = $driver === 'sqlite' ? 75 : 500;
+        $temporaryFingerprint = $driver === 'sqlite'
+            ? "('tmp-calendar:{$token}:' || id)"
+            : "CONCAT('tmp-calendar:{$token}:', id)";
+
+        $changes->pluck('id')->chunk($chunkSize)->each(function (Collection $ids) use ($temporaryFingerprint) {
+            DB::table('rpp_week_items')->whereIn('id', $ids)->update([
+                'source_fingerprint' => DB::raw($temporaryFingerprint),
             ]);
-        }
+        });
 
-        return $changes->count();
+        $now = now();
+        $changes->chunk($chunkSize)->each(function (Collection $chunk) use ($userId, $now) {
+            $assignments = [
+                'calendar_week_id' => fn (array $change) => $change['after']['calendar_week_id'],
+                'source_fingerprint' => fn (array $change) => $change['source_fingerprint'],
+                'occurrence_no' => fn (array $change) => $change['after']['occurrence_no'],
+                'position' => fn (array $change) => $change['after']['position'],
+                'lock_version' => fn (array $change) => $change['after_lock_version'],
+            ];
+            $bindings = [];
+            $sets = [];
+            foreach ($assignments as $column => $value) {
+                $case = "{$column} = CASE id";
+                foreach ($chunk as $change) {
+                    $case .= ' WHEN ? THEN ?';
+                    $bindings[] = $change['id'];
+                    $bindings[] = $value($change);
+                }
+                $sets[] = $case.' ELSE '.$column.' END';
+            }
+            $sets[] = 'last_edited_by = ?';
+            $bindings[] = $userId;
+            $sets[] = 'updated_at = ?';
+            $bindings[] = $now;
+            $placeholders = implode(',', array_fill(0, $chunk->count(), '?'));
+            $bindings = array_merge($bindings, $chunk->pluck('id')->all());
+            DB::update('UPDATE rpp_week_items SET '.implode(', ', $sets)." WHERE id IN ({$placeholders})", $bindings);
+        });
+
+        $revisionRows = $changes->map(fn (array $change) => [
+            'revision_batch_id' => $batch->id,
+            'revisable_type' => 'rpp',
+            'revisable_id' => $change['id'],
+            'before_values' => json_encode($change['before'], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
+            'after_values' => json_encode($change['after'], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
+            'before_lock_version' => $change['before_lock_version'],
+            'after_lock_version' => $change['after_lock_version'],
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        $revisionRows->chunk($chunkSize)->each(fn (Collection $chunk) => DB::table('revision_items')->insert($chunk->all()));
     }
 
     /**
@@ -582,30 +823,65 @@ class AcademicCalendarService
             ->keyBy('level_id');
     }
 
-    private function preserveAnnualValidations(AcademicYear $year, Collection $levelIds, Collection $states): void
+    private function preserveAnnualValidations(AcademicYear $year, Collection $levelIds, Collection $states): int
     {
-        foreach ($levelIds->unique() as $levelId) {
-            $plan = RppPlan::query()
-                ->where('academic_year_id', $year->id)
-                ->where('level_id', $levelId)
-                ->first();
-            if (! $plan) {
-                continue;
+        $levelIds = $levelIds->map(fn ($id) => (int) $id)->unique()->values();
+        if ($levelIds->isEmpty()) {
+            return 0;
+        }
+
+        $totals = RppMaterialCatalogItem::query()
+            ->whereIn('level_id', $levelIds)
+            ->where('source_kind', 'ggb')
+            ->where('is_schedulable', true)
+            ->where('is_active', true)
+            ->selectRaw('level_id, COUNT(*) as aggregate')
+            ->groupBy('level_id')
+            ->pluck('aggregate', 'level_id');
+        $used = DB::table('rpp_material_catalog_items as catalog')
+            ->join('rpp_week_item_materials as material_links', 'material_links.rpp_material_catalog_item_id', '=', 'catalog.id')
+            ->join('rpp_week_items as placements', 'placements.id', '=', 'material_links.rpp_week_item_id')
+            ->join('rpp_plans as plans', 'plans.id', '=', 'placements.rpp_plan_id')
+            ->whereIn('catalog.level_id', $levelIds)
+            ->where('catalog.source_kind', 'ggb')
+            ->where('catalog.is_schedulable', true)
+            ->where('catalog.is_active', true)
+            ->where('plans.academic_year_id', $year->id)
+            ->whereColumn('plans.level_id', 'catalog.level_id')
+            ->selectRaw('catalog.level_id, COUNT(DISTINCT catalog.id) as aggregate')
+            ->groupBy('catalog.level_id')
+            ->pluck('aggregate', 'catalog.level_id');
+
+        $preserved = 0;
+        $now = now();
+        $rows = $levelIds->map(function (int $levelId) use ($year, $states, $totals, $used, $now, &$preserved) {
+            $total = (int) ($totals[$levelId] ?? 0);
+            $covered = (int) ($used[$levelId] ?? 0);
+            $percent = $total > 0 ? round(($covered / $total) * 100, 2) : 100.0;
+            $previous = $states->get($levelId);
+            $keepValidated = $previous?->status === 'validated' && $percent >= 100;
+            if ($keepValidated) {
+                $preserved++;
             }
 
-            $coverage = $this->catalog->coverage($plan);
-            $previous = $states->get($levelId);
-            $keepValidated = $previous?->status === 'validated' && (float) $coverage['percent'] >= 100;
-            RppAnnualValidation::query()->updateOrCreate(
-                ['academic_year_id' => $year->id, 'level_id' => $levelId],
-                [
-                    'status' => $keepValidated ? 'validated' : 'draft',
-                    'coverage_percent' => $coverage['percent'],
-                    'validated_at' => $keepValidated ? $previous->validated_at : null,
-                    'validated_by' => $keepValidated ? $previous->validated_by : null,
-                ],
-            );
-        }
+            return [
+                'academic_year_id' => $year->id,
+                'level_id' => $levelId,
+                'status' => $keepValidated ? 'validated' : 'draft',
+                'coverage_percent' => $percent,
+                'validated_at' => $keepValidated ? $previous->validated_at : null,
+                'validated_by' => $keepValidated ? $previous->validated_by : null,
+                'created_at' => $previous?->created_at ?? $now,
+                'updated_at' => $now,
+            ];
+        });
+        DB::table('rpp_annual_validations')->upsert(
+            $rows->all(),
+            ['academic_year_id', 'level_id'],
+            ['status', 'coverage_percent', 'validated_at', 'validated_by', 'updated_at'],
+        );
+
+        return $preserved;
     }
 
     private function log(?int $userId, string $action, array $details): void

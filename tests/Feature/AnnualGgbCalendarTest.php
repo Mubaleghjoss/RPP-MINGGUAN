@@ -22,6 +22,7 @@ use App\Services\AcademicCalendarService;
 use App\Services\RppAnnualGgbService;
 use App\Services\RppMaterialCatalogService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Livewire\Livewire;
 use Tests\TestCase;
@@ -70,6 +71,8 @@ class AnnualGgbCalendarTest extends TestCase
         $later = $this->placement($plans[1], $weeks[1], $column, $syllabus, false, 'Materi minggu kedua', 2);
         $calendar = app(AcademicCalendarService::class);
         $user = User::factory()->create();
+        $plans[1]->update(['status' => 'validated', 'validated_at' => now()]);
+        $plans[2]->update(['status' => 'validated', 'validated_at' => now()]);
         $payload = [
             'type' => 'exam', 'title' => 'Ujian serentak', 'details' => 'Seluruh kegiatan belajar dihentikan.',
             'starts_on' => '2026-07-08', 'ends_on' => '2026-07-09', 'applies_to_all' => false,
@@ -78,17 +81,22 @@ class AnnualGgbCalendarTest extends TestCase
         $preview = $calendar->previewEvent($year, $payload);
         $this->assertSame(1, $preview['weeks']->count());
         $this->assertSame(1, $preview['locked_count']);
-        $event = $calendar->saveEvent($year, $payload, $user->id);
+        $result = $calendar->saveEvent($year, $payload, $user->id);
+        $event = $result['event'];
 
         $this->assertFalse($calendar->isEffective($plans[1], $weeks[0]));
         $this->assertSame($weeks[1]->id, $locked->fresh()->calendar_week_id);
         $this->assertSame($weeks[2]->id, $later->fresh()->calendar_week_id);
         $this->assertTrue($locked->fresh()->is_locked);
+        $this->assertSame('draft', $plans[1]->fresh()->status);
+        $this->assertSame('validated', $plans[2]->fresh()->status);
+        $this->assertSame(1, $result['validated_plans_drafted']);
         $this->assertDatabaseHas('revision_items', ['revisable_type' => 'calendar_event', 'revisable_id' => $event->id]);
 
         $calendar->deleteEvent($event, $user->id);
         $this->assertTrue($calendar->isEffective($plans[1], $weeks[0]));
         $this->assertSame($weeks[1]->id, $locked->fresh()->calendar_week_id, 'Menghapus acara tidak menarik materi mundur.');
+        $this->assertSame('validated', $plans[2]->fresh()->status);
     }
 
     public function test_calendar_range_compresses_materials_when_fewer_effective_weeks_remain(): void
@@ -142,11 +150,12 @@ class AnnualGgbCalendarTest extends TestCase
         $calendar = app(AcademicCalendarService::class);
         $user = User::factory()->create();
 
-        $event = $calendar->saveEvent($year, [
+        $result = $calendar->saveEvent($year, [
             'type' => 'holiday', 'title' => 'Libur minggu pertama', 'details' => 'Menguji materi berulang.',
             'starts_on' => '2026-07-06', 'ends_on' => '2026-07-12', 'applies_to_all' => false,
             'level_ids' => [$level->id], 'confirm_impact' => true,
         ], $user->id);
+        $event = $result['event'];
 
         $this->assertSame($weeks[1]->id, $first->fresh()->calendar_week_id);
         $this->assertSame($weeks[2]->id, $second->fresh()->calendar_week_id);
@@ -229,6 +238,107 @@ class AnnualGgbCalendarTest extends TestCase
                     && count($notification['details'] ?? []) >= 1
                     && count($notification['suggestions'] ?? []) >= 1;
             });
+    }
+
+    public function test_all_level_exam_reflows_one_thousand_placements_with_bounded_queries(): void
+    {
+        $year = AcademicYear::query()->create([
+            'label' => '2026/2027', 'starts_on' => '2026-07-06', 'ends_on' => '2027-07-18', 'is_active' => true,
+        ]);
+        $weeks = collect();
+        foreach (range(1, 54) as $number) {
+            $date = now()->setDate(2026, 7, 6)->startOfDay()->addWeeks($number - 1);
+            $weeks->push(CalendarWeek::query()->create([
+                'academic_year_id' => $year->id, 'week_number' => $number, 'semester' => $number <= 27 ? 1 : 2,
+                'starts_on' => $date->toDateString(), 'month_label' => $date->translatedFormat('F'),
+                'type' => 'effective', 'is_effective' => true,
+            ]));
+        }
+        $week23 = $weeks->firstWhere('week_number', 23);
+        $lastSemesterOneWeek = $weeks->firstWhere('week_number', 27);
+        $firstPlans = [];
+        $secondPlans = [];
+        $rows = [];
+        $now = now();
+
+        foreach (range(1, 17) as $levelNumber) {
+            $level = Level::query()->create([
+                'code' => 'SKL'.$levelNumber, 'name' => 'Skala '.$levelNumber, 'stage' => 'PAUD', 'sort_order' => $levelNumber,
+            ]);
+            $document = SourceDocument::query()->create([
+                'level_id' => $level->id, 'source_key' => 'scale:syllabus:'.$levelNumber, 'type' => 'silabus',
+                'title' => 'Silabus Skala '.$levelNumber, 'path' => 'scale-'.$levelNumber.'.pdf',
+                'sha256' => str_repeat((string) ($levelNumber % 10), 64), 'page_count' => 1,
+            ]);
+            $syllabus = SyllabusItem::query()->create([
+                'level_id' => $level->id, 'source_document_id' => $document->id, 'source_key' => 'scale:item:'.$levelNumber,
+                'stable_code' => 'SKL'.$levelNumber.' / MATERI / 001', 'category' => 'Materi', 'title' => 'Materi skala',
+                'description' => 'Uji perpindahan massal', 'allocation_text' => 'mingguan', 'recommended_sessions' => 1,
+                'schedule_pattern' => 'weekly', 'schedule_pattern_source' => 'auto', 'needs_allocation' => false,
+                'is_duplicate' => false, 'source_page' => 1, 'sort_order' => 1, 'group_number' => 1,
+                'source_semester' => '1', 'semester_scope' => '1',
+            ]);
+            $column = RppMatrixColumn::query()->create([
+                'level_id' => $level->id, 'stable_key' => 'materi', 'aspect_label' => 'I. Materi',
+                'subaspect_label' => 'A. Pokok', 'label' => 'Materi', 'sort_order' => 1, 'width' => 24, 'is_active' => true,
+            ]);
+            $firstPlans[$levelNumber] = RppPlan::query()->create([
+                'academic_year_id' => $year->id, 'level_id' => $level->id, 'semester' => 1,
+                'status' => 'validated', 'validated_at' => $now,
+            ]);
+            $secondPlans[$levelNumber] = RppPlan::query()->create([
+                'academic_year_id' => $year->id, 'level_id' => $level->id, 'semester' => 2,
+                'status' => 'validated', 'validated_at' => $now,
+            ]);
+            foreach ($weeks->where('semester', 1) as $week) {
+                foreach (range(1, 12) as $slot) {
+                    $rows[] = [
+                        'rpp_plan_id' => $firstPlans[$levelNumber]->id,
+                        'calendar_week_id' => $week->id,
+                        'syllabus_item_id' => $syllabus->id,
+                        'source_fingerprint' => 'scale:'.$slot,
+                        'occurrence_no' => 1,
+                        'rpp_matrix_column_id' => $column->id,
+                        'strand' => 'Materi',
+                        'content' => 'Materi '.$slot,
+                        'source' => $slot === 1 ? 'manual' : 'auto',
+                        'is_locked' => $slot === 1,
+                        'position' => $slot,
+                        'lock_version' => 0,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ];
+                }
+            }
+        }
+        collect($rows)->chunk(500)->each(fn ($chunk) => DB::table('rpp_week_items')->insert($chunk->all()));
+
+        $queryCount = 0;
+        DB::listen(function () use (&$queryCount): void {
+            $queryCount++;
+        });
+        $startedAt = microtime(true);
+        $result = app(AcademicCalendarService::class)->saveEvent($year, [
+            'type' => 'exam', 'title' => 'Ujian Serentak', 'details' => 'Ujian seluruh jenjang.',
+            'starts_on' => '2026-12-07', 'ends_on' => '2026-12-11', 'applies_to_all' => true,
+            'level_ids' => [], 'confirm_impact' => true,
+        ], null);
+        $elapsed = microtime(true) - $startedAt;
+
+        $this->assertSame(17, $result['affected_plans']);
+        $this->assertSame(204, $result['range_items']);
+        $this->assertSame(1020, $result['moved_items']);
+        $this->assertSame(17, $result['validated_plans_drafted']);
+        $this->assertSame(0, $result['matrix_repairs']);
+        $this->assertLessThan(300, $queryCount);
+        $this->assertLessThan(20, $elapsed);
+        $this->assertDatabaseHas('calendar_events', ['title' => 'Ujian Serentak', 'applies_to_all' => true]);
+        $this->assertSame('draft', $firstPlans[1]->fresh()->status);
+        $this->assertSame('validated', $secondPlans[1]->fresh()->status);
+        $this->assertFalse(app(AcademicCalendarService::class)->isEffective($firstPlans[1], $week23));
+        $this->assertSame(24, $firstPlans[1]->items()->where('calendar_week_id', $lastSemesterOneWeek->id)->count());
+        $this->assertSame(12, $firstPlans[1]->items()->where('calendar_week_id', $lastSemesterOneWeek->id)->where('occurrence_no', 2)->count());
+        $this->assertTrue($firstPlans[1]->items()->where('source_fingerprint', 'scale:1')->where('is_locked', true)->exists());
     }
 
     private function fixture(): array

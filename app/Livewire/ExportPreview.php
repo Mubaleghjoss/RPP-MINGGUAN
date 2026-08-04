@@ -372,12 +372,21 @@ class ExportPreview extends Component
     {
         $this->resetMessages();
         try {
-            $calendar->saveEvent($this->year(), $this->calendarPayload(), Auth::id(), $this->calendarEventId);
+            $result = $calendar->saveEvent($this->year(), $this->calendarPayload(), Auth::id(), $this->calendarEventId);
+            $annualNote = $result['annual_validations_preserved'] > 0
+                ? "{$result['annual_validations_preserved']} validasi GGB tahunan tetap aktif karena cakupannya masih 100%."
+                : 'Cakupan GGB tahunan dihitung ulang tanpa menghapus relasi materi.';
             $this->notifySuccess(
-                'Rentang kalender disimpan dan RPP terdampak digeser ke minggu efektif berikutnya.',
+                "{$result['moved_items']} materi digeser pada {$result['affected_plans']} RPP. {$result['validated_plans_drafted']} RPP tervalidasi dikembalikan menjadi Draf untuk diperiksa ulang.",
                 'Kalender berhasil diperbarui',
-                [],
-                ['Periksa kembali baris non-efektif dan urutan materi pada preview RPP.'],
+                [
+                    "{$result['range_items']} materi berada tepat pada rentang yang dibuat non-efektif.",
+                    "{$result['locked_items']} materi terkunci dipertahankan isi dan status kuncinya.",
+                ],
+                [
+                    $annualNote,
+                    'Periksa kembali baris non-efektif dan urutan materi pada preview RPP, lalu validasi semester yang berubah.',
+                ],
             );
             $this->resetCalendarForm();
         } catch (ValidationException $exception) {
